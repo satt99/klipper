@@ -33,7 +33,7 @@ static LPC_GPIO_TypeDef * const digital_regs[] = {
 
 // Set the mode and extended function of a pin
 void
-gpio_peripheral(int bank, int pin, int func, int pullup)
+gpio_peripheral(int bank, int pin, int func, int pullup, int opendrain)
 {
     uint32_t bank_pos = bank * 2, pin_pos = pin * 2;
     if (pin_pos >= 32) {
@@ -42,11 +42,14 @@ gpio_peripheral(int bank, int pin, int func, int pullup)
     }
     uint32_t sel_bits = (func & 0x03) << pin_pos, mask = ~(0x03 << pin_pos);
     uint32_t mode_bits = (pullup ? 0x00 : 0x02) << pin_pos;
+    uint32_t od_mask = ~(1<<pin), od_bits = opendrain ? (1<<pin) : 0;
     volatile uint32_t *pinsel = &LPC_PINCON->PINSEL0;
     volatile uint32_t *pinmode = &LPC_PINCON->PINMODE0;
+    volatile uint32_t *pinmode_od = &LPC_PINCON->PINMODE_OD0;
     irqstatus_t flag = irq_save();
     pinsel[bank_pos] = (pinsel[bank_pos] & mask) | sel_bits;
     pinmode[bank_pos] = (pinmode[bank_pos] & mask) | mode_bits;
+    pinmode_od[bank] = (pinmode_od[bank] & od_mask) | od_bits;
     irq_restore(flag);
 }
 
@@ -105,7 +108,7 @@ gpio_in_setup(uint8_t pin, int8_t pull_up)
     LPC_GPIO_TypeDef *regs = digital_regs[port];
     uint32_t bit = GPIO2BIT(pin);
     irqstatus_t flag = irq_save();
-    gpio_peripheral(port, pin % 32, 0, pull_up);
+    gpio_peripheral(port, pin % 32, 0, pull_up, 0);
     regs->FIODIR &= ~bit;
     irq_restore(flag);
     return (struct gpio_in){ .regs=regs, .bit=bit };
@@ -158,7 +161,7 @@ gpio_adc_setup(uint8_t pin)
         LPC_ADC->ADCR = adcr;
     }
 
-    gpio_peripheral(GPIO2PORT(pin), pin % 32, adc_pin_funcs[chan], 0);
+    gpio_peripheral(GPIO2PORT(pin), pin % 32, adc_pin_funcs[chan], 0, 0);
 
     return (struct gpio_adc){ .cmd = adcr | (1 << chan) | (1 << 24) };
 }
