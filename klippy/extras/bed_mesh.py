@@ -254,15 +254,15 @@ class ZMesh:
         if not mesh_x_count:
             self.mesh_x_count = config.getint('mesh_x_count', 7, minval=5)
         elif mesh_x_count < 5:
-            config.error("mesh_x_count cannot be less than 5")
+            raise config.error("mesh_x_count cannot be less than 5")
         if not mesh_y_count:
             self.mesh_y_count = config.getint('mesh_y_count', 7, minval=5)
         elif mesh_y_count < 5:
-            config.error("mesh_y_count cannot be less than 5")
+            raise config.error("mesh_y_count cannot be less than 5")
         if not (self.mesh_x_count & 1):
-            config.error("mesh_y_count must be an odd value")
+            raise config.error("mesh_y_count must be an odd value")
         if not (self.mesh_y_count & 1):
-            config.error("mesh_y_count must be an odd value")
+            raise config.error("mesh_y_count must be an odd value")
         self.mesh_x_dist = (self.mesh_x_max - self.mesh_x_min) / (self.mesh_x_count - 1)
         self.mesh_y_dist = (self.mesh_y_max - self.mesh_y_min) / (self.mesh_y_count - 1)
     def get_x_coordinate(self, index):

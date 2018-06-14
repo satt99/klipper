@@ -29,8 +29,7 @@ class CustomGcode:
                     command_func = getattr(self, "cmd_" + key)
                     help_attr = getattr(self, "cmd_" + key + "_help")
                 except:
-                    config.error("Gcode [%s] Not supported" % (key))
-                    return
+                    raise config.error("Gcode [%s] Not supported" % (key))
                 self.gcode.register_command(key, command_func, 
                                             desc = help_attr)
                 logging.info("Extended gcode " + key + " enabled" )
@@ -123,6 +122,8 @@ class CustomGcode:
         self.gcode.run_script("SET_PIN PIN=beeper VALUE=1")
         waketime = self.reactor.monotonic() + .5
         self.reactor.update_timer(self.beeper_off_timer, waketime)
+    # TODO: add gcodes for TOGGLE_BEEPER and perhaps TONE_BEEPER if I switch to pwm
+    
 
 def load_config(config):
     return CustomGcode(config)
