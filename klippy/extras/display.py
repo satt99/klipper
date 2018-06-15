@@ -885,6 +885,7 @@ class PrinterLCD:
             self.message_time = None
             self.message = None
             self.gcode.register_command('M73', self.cmd_M73)
+            self.gcode.register_command('M117', self.cmd_M117, desc=self.cmd_M117_help)
             # Load glyphs
             self.load_glyph(self.BED1_GLYPH, heat1_icon)
             self.load_glyph(self.BED2_GLYPH, heat2_icon)
@@ -1095,6 +1096,15 @@ class PrinterLCD:
     # print progress: M73 P<percent>
     def cmd_M73(self, params):
         self.progress = self.gcode.get_int('P', params, minval=0, maxval=100)
+    cmd_M117_help = "Show Message on Display"
+    def cmd_M117(self, params):
+        if '#original' in params:
+            msg = params['#original']
+            if len(msg) > 5:
+                msg = msg[5:]
+                self.set_message(msg)
+            else:
+                self.set_message(None)
 
 def load_config(config):
     return PrinterLCD(config)
