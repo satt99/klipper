@@ -17,7 +17,7 @@ class ProbeTemp:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.display = None
-        self.cal_helper = ProbeCalibrationHelper(self)
+        self.cal_helper = ProbeCalibrationHelper(config, self)
         self.sensor_type = config.get('sensor_type', None)
         if self.sensor_type is None:
             raise self.config.error("ProbeTemp: sensor_type is a required field")
@@ -42,7 +42,7 @@ class ProbeTemp:
         self.gcode.register_command(
             'GET_PROBE_TEMP', self.cmd_GET_PROBE_TEMP, desc=self.cmd_GET_PROBE_TEMP_help)
         self.gcode.register_command(
-            'PROBE_WAIT', self.cmd_PROBE_WAIT_TEMP, desc=self.cmd_PROBE_WAIT_TEMP_help)
+            'PROBE_WAIT', self.cmd_PROBE_WAIT, desc=self.cmd_PROBE_WAIT_help)
     def printer_state(self, state):
         if state == 'ready':
             self.cal_helper.printer_state(state)
@@ -67,8 +67,8 @@ class ProbeTemp:
                 return self.probe_offsets[last_idx][1]
             else:
                 # Interpolate between points, not over the entire curve, because the
-                # change is not linear
-                for index in range(last_idx - 1):
+                # change is not linear across all temperatures
+                for index in range(last_idx):
                     if self.sensor_temp > self.probe_offsets[index][0] and \
                        self.sensor_temp <= self.probe_offsets[index+1][0]:
                         temp_delta = self.probe_offsets[index+1][0] - self.probe_offsets[index][0]
@@ -76,9 +76,15 @@ class ProbeTemp:
                         return (1. - t) * self.probe_offsets[index][1] + t * self.probe_offsets[index+1][1] 
         else:
             return 0.
-    def pause_for_temp(self, next_temp, timeout=300):
+    def pause_for_temp(self, target_temp, timeout=300, heat_up=True):
+        if heat_up:
+            start_temp = self.sensor_temp
+            end_temp = target_temp
+        else:
+            start_temp = target_temp
+            end_temp = self.sensor_temp
         total_time = 0
-        while self.sensor_temp < next_temp:
+        while start_temp <= end_temp:
                 self.pause_for_time(1)
                 total_time += 1
                 if timeout and total_time >= timeout:
@@ -100,10 +106,10 @@ class ProbeTemp:
     cmd_GET_PROBE_TEMP_help = "Return the probe temperature if it has a thermistor"
     def cmd_GET_PROBE_TEMP(self, params):
         self.gcode.respond_info("Probe Temperature: %.2f" % (self.sensor_temp))
-    cmd_PROBE_WAIT_TEMP_help = "Pause until the probe thermistor reaches a temperature"
-    def cmd_PROBE_WAIT_TEMP(self, params):
+    cmd_PROBE_WAIT_help = "Pause until the probe thermistor reaches a temperature"
+    def cmd_PROBE_WAIT(self, params):
         extr_on, bed_on = self._get_heater_status()
-        wait_temp = self.gcode.get_float('TEMP', params, 35., above=25., maxval=65.)
+        wait_temp = self.gcode.get_float('TEMP', params, 35., minval=25., maxval=65.)
         timeout = self.gcode.get_int('TIMEOUT', params, 0, minval=0) * 60
         direction = self.gcode.get_str('DIRECTION', params, 'up').lower()
         if direction == 'down':
@@ -112,7 +118,7 @@ class ProbeTemp:
                 self.gcode.respond_info("Heaters are on, please disable "
                                         "before attempting to wait for probe to cool.")
                 return
-            self.pause_for_temp(wait_temp, timeout)
+            self.pause_for_temp(wait_temp, timeout, False)
         elif direction == 'up':
             if not extr_on and not bed_on:
                 # One of the heaters are on, we can't wait
@@ -122,7 +128,7 @@ class ProbeTemp:
             self.pause_for_temp(wait_temp, timeout)
     
 class ProbeCalibrationHelper:
-    def __init__(self, probetemp):
+    def __init__(self, config, probetemp):
         self.sensor = probetemp
         self.printer = self.sensor.printer
         self.gcode = self.sensor.gcode
@@ -130,10 +136,9 @@ class ProbeCalibrationHelper:
         self.gcode.register_command(
             'CALIBRATE_PROBE_TEMP', self.cmd_CALIBRATE_PROBE_TEMP, 
             desc=self.cmd_CALIBRATE_PROBE_TEMP_help)
+        stepper_config = config.getsection('stepper_z')
+        self.z_offset = stepper_config.getfloat('position_endstop')
     def printer_state(self, state):
-        # TODO get offset straight from stepper or maybe toolhead
-        probe = self.printer.lookup_object('probe')
-        self.z_offset = probe.z_offset
         self.toolhead = self.printer.lookup_object('toolhead')
         self.kinematics = self.toolhead.get_kinematics()
         try:
@@ -159,21 +164,21 @@ class ProbeCalibrationHelper:
     cmd_CALIBRATE_PROBE_TEMP_help = "Calbrate the probe's offset based on its temperature"
     def cmd_CALIBRATE_PROBE_TEMP(self, params):
         #TODO: Register RESUME and Cancel Gcodes
+        xstart = self.gcode.get_float('XSTART', params, 97., minval=0., maxval=245.)
+        ystart = self.gcode.get_float('YSTART', params, 150, minval=0, maxval=210.)
         max_probe_temp = self.gcode.get_float('MAX_TEMP', params, 45., above=25.)
         bed_temp = self.gcode.get_float('BED_TEMP', params, 70., above=50.)
         extruder_temp = self.gcode.get_float('EXTRUDER_TEMP', params, None, above=170.)
         z_pos = 0.
-        ex_temp_bump = None
         probe_dict = {}
         self.gcode.respond_info("Starting Probe Temperature Calibration...")
         if self.display:
             self.display.set_message("PINDA Cal Start...")
         self.gcode.run_script("G28")
-        self.gcode.run_script("G1 X50 Y50 Z150 F5000")
+        self.gcode.run_script("G1 X%.2f Y%.2f Z150 F5000" % (xstart, ystart))
         self.gcode.run_script("M190 S%.2f" % (bed_temp))
         if extruder_temp:
             self.gcode.run_script("M109 S%.2f" % (extruder_temp))
-            ex_temp_bump = 240. if (extruder_temp < 240.) else None
         self.gcode.run_script("G28 Z0")
         # loop probes until max_probe temp is reach
         keep_alive = True
@@ -188,15 +193,6 @@ class ProbeCalibrationHelper:
             # Lower Head to absorb maximum heat
             self._move_toolhead_z(.2)
             keep_alive = self.sensor.pause_for_temp(self.sensor.sensor_temp + .5, 180)
-            if not keep_alive and ex_temp_bump:
-                # After attempt to reach next temperature times out, 
-                # try bumping the extruder temperature to 240 (NOTE: This
-                # might affect e-axis geometry and the rate of probe temp increase.
-                # These could have an affect on drift an thus produce unreliable
-                # calibration results)
-                keep_alive = True
-                self.gcode.run_script("M104 S%.2f" % (ex_temp_bump))
-                ex_temp_bump = None
         self.gcode.respond_info("Probe Calibration Complete!")
         if self.display:
             self.display.set_message("PINDA Cal Done!", 10.)
@@ -204,7 +200,7 @@ class ProbeCalibrationHelper:
         self.gcode.run_script("M104 S0")
         self.gcode.run_script("M140 S0")
         self.gcode.run_script("G1 Z50")
-        #TODO: Instead of saving to python dict
+        
         # Save dictionary to file
         try:
             f = open("/home/pi/debug_dir/PindaTemps.pkl", "wb")
