@@ -97,14 +97,7 @@ class BedMesh:
             # Upsample to a 7x7 mesh
             msg = "Num X,Y: %d,%d\n" % (self.mesh_z.mesh_x_count, self.mesh_z.mesh_y_count) 
             msg +="Search Height: %d\n" % (self.horizontal_move_z)
-            # TODO: Commented this for debugging
-            # Bring all numbers above zero.  Many interpreters don't like
-            # Negative numbers
-            #min_z = min([min(line) for line in self.mesh_z.mesh_z_table])
-            #if min_z < 0:
-            #    min_z *= -1.
-            #else:
-            #    min_z = 0.
+            
             msg += "Measured points:\n"
             for y_line in range(self.mesh_z.mesh_x_count - 1, -1, -1):
                 for z in self.mesh_z.mesh_z_table[y_line]:

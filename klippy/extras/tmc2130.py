@@ -96,9 +96,12 @@ class TMC2130:
         self.set_wave(wave_factor, True)
         # Linearity Correction GCODE setup
         self.gcode = self.printer.lookup_object('gcode')
-        self.gcode.register_mux_command("TMC_SET_WAVE", "STEPPER", self.stepper_name,
-                                        self.cmd_TMC_SET_WAVE,
-                                        desc=self.cmd_TMC_SET_WAVE_help)
+        self.gcode.register_mux_command(
+            "TMC_SET_WAVE", "STEPPER", self.stepper_name,
+            self.cmd_TMC_SET_WAVE, desc=self.cmd_TMC_SET_WAVE_help)
+        self.gcode.register_mux_command(
+            "TMC_SET_STEALTH", "STEPPER", self.stepper_name,
+            self.cmd_TMC_SET_STEALTH, desc=self.cmd_TMC_SET_STEALTH_help)
     def add_config_cmd(self, addr, val):
         self.mcu.add_config_cmd("spi_send oid=%d data=%02x%08x" % (
             self.oid, (addr | 0x80) & 0xff, val & 0xffffffff), is_init=True)
@@ -116,8 +119,8 @@ class TMC2130:
         stepper_name = config.get_name().split()[1]
         stepper_config = config.getsection(stepper_name)
         step_dist = stepper_config.getfloat('step_distance')
-        step_dist_256 = step_dist / (1 << self.mres)
-        return int(TMC_FREQUENCY * step_dist_256 / velocity + .5)
+        self.step_dist_256 = step_dist / (1 << self.mres)
+        return int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
     def setup_pin(self, pin_params):
         if (pin_params['pin'] != 'virtual_endstop'
             or pin_params['type'] != 'endstop'):
@@ -250,6 +253,14 @@ class TMC2130:
     def cmd_TMC_SET_WAVE(self, params):
         if 'FACTOR' in params:
             self.set_wave(self.gcode.get_float('FACTOR', params))
+    cmd_TMC_SET_STEALTH_help = "Set TMC2130 Stealthchop velocity threshold"
+    def cmd_TMC_SET_STEALTH(self, params):
+        velocity = self.gcode.get_float('THRESHOLD', 0., minval=0.)
+        sc_threshold = 0
+        if velocity > 0.:
+            sc_threshold = int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
+        #SET TPWMTHRS
+        self.set_register(0x13, max(0, min(0xfffff, sc_threshold)))
 
 # Endstop wrapper that enables tmc2130 "sensorless homing"
 class TMC2130VirtualEndstop:

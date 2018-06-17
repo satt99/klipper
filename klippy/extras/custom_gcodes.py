@@ -46,7 +46,7 @@ class CustomGcode:
         return self.reactor.NEVER
     cmd_SET_BEEPER_help = "Toggle beeper on for provided duration (default 1s)"
     def cmd_SET_BEEPER(self, params):
-        duration = self.gcode.get_float('DURATON', params, 1., above=.1)
+        duration = self.gcode.get_float('DURATION', params, 1., above=.1)
         self.gcode.run_script("SET_PIN PIN=beeper VALUE=1")
         waketime = self.reactor.monotonic() + duration
         self.reactor.update_timer(self.beeper_off_timer, waketime)
