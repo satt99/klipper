@@ -114,13 +114,14 @@ class TMC2130:
                  - 1. + .5)
         return max(0, min(31, cs))
     def velocity_to_clock(self, config, velocity):
-        if not velocity:
-            return 0
         stepper_name = config.get_name().split()[1]
         stepper_config = config.getsection(stepper_name)
         step_dist = stepper_config.getfloat('step_distance')
         self.step_dist_256 = step_dist / (1 << self.mres)
-        return int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
+        if not velocity:
+            return 0
+        else:
+            return int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
     def setup_pin(self, pin_params):
         if (pin_params['pin'] != 'virtual_endstop'
             or pin_params['type'] != 'endstop'):
