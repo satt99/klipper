@@ -36,8 +36,9 @@ class ProbeTemp:
             except:
                 raise config.error("Unable to parse probe offsets in %s" % (
                     config.get_name()))
-        else:
-            self.probe_offsets = self._get_default_offsets()
+            if len(self.probe_offsets) < 2:
+                raise config.error("Need at least 2 points for %s" % (
+                    config.get_name()))
         self.sensor = None
         self.sensor_temp = 0.
         self.z_offset = 0.
@@ -62,15 +63,6 @@ class ProbeTemp:
                 if self.sensor:
                     self.sensor.setup_minmax(0., 100.)
                     self.sensor.setup_callback(self.temperature_callback)
-    def _get_default_offsets(self):
-        default_offsets = [
-            (35.0, 0.),
-            (40.0, .02),
-            (45.0, .06),
-            (50.0, .120),
-            (55.0, .2),
-            (60.0, .3)]
-        return default_offsets
     def temperature_callback(self, readtime, temp):
         with self.lock:
             self.sensor_temp = temp
