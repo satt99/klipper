@@ -255,7 +255,7 @@ class TMC2130:
             self.set_wave(self.gcode.get_float('FACTOR', params))
     cmd_TMC_SET_STEALTH_help = "Set TMC2130 Stealthchop velocity threshold"
     def cmd_TMC_SET_STEALTH(self, params):
-        velocity = self.gcode.get_float('THRESHOLD', 0., minval=0.)
+        velocity = self.gcode.get_float('THRESHOLD', params, 0., minval=0.)
         sc_threshold = 0
         if velocity > 0.:
             sc_threshold = int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
