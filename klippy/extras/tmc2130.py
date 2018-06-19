@@ -3,8 +3,9 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math
+import math, struct
 import logging
+import threading
 
 TMC_FREQUENCY=13200000.
 REG_GCONF=0x00
@@ -22,10 +23,14 @@ TMC_WAVE_FACTOR_MIN = 1.005
 TMC_WAVE_FACTOR_MAX = 1.3
 TMC_WAVE_AMP = 247
 
+SPI_XFER_TIMEOUT = 2.
+SPI_RETRIES = 5
+
 class TMC2130:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.stepper_name = config.get_name().split()[1]
+        self._stepper = None
         # pin setup
         ppins = self.printer.lookup_object("pins")
         cs_pin = config.get('cs_pin')
@@ -64,7 +69,12 @@ class TMC2130:
         # Allow virtual endstop to be created
         self.diag1_pin = config.get('diag1_pin', None)
         ppins.register_chip("_".join(config.get_name().split()[:2]), self)
-        self.send_spi_cmd = None
+        self.spi_send_cmd = None
+        self.spi_transfer_cmd = None
+        self._spi_data = None
+        self._is_data_tranfer = False
+        self._read_request = 0x00
+        self._lock = threading.Lock()
         self.mcu.add_config_object(self)
         # calculate current
         vsense = False
@@ -102,6 +112,9 @@ class TMC2130:
         self.gcode.register_mux_command(
             "TMC_SET_STEALTH", "STEPPER", self.stepper_name,
             self.cmd_TMC_SET_STEALTH, desc=self.cmd_TMC_SET_STEALTH_help)
+        self.gcode.register_mux_command(
+            "TMC_SET_STEP", "STEPPER", self.stepper_name,
+            self.cmd_TMC_SET_STEP)
     def add_config_cmd(self, addr, val):
         self.mcu.add_config_cmd("spi_send oid=%d data=%02x%08x" % (
             self.oid, (addr | 0x80) & 0xff, val & 0xffffffff), is_init=True)
@@ -114,10 +127,9 @@ class TMC2130:
                  - 1. + .5)
         return max(0, min(31, cs))
     def velocity_to_clock(self, config, velocity):
-        stepper_name = config.get_name().split()[1]
-        stepper_config = config.getsection(stepper_name)
-        step_dist = stepper_config.getfloat('step_distance')
-        self.step_dist_256 = step_dist / (1 << self.mres)
+        stepper_config = config.getsection(self.stepper_name)
+        self.step_dist = stepper_config.getfloat('step_distance')
+        self.step_dist_256 = self.step_dist / (1 << self.mres)
         if not velocity:
             return 0
         else:
@@ -133,10 +145,71 @@ class TMC2130:
         cmd_queue = self.mcu.alloc_command_queue()
         self.spi_send_cmd = self.mcu.lookup_command(
             "spi_send oid=%c data=%*s", cq=cmd_queue)
+        self.spi_transfer_cmd = self.mcu.lookup_command(
+            "spi_transfer oid=%c data=%*s", cq=cmd_queue)
+        self.mcu.register_msg(self._handle_spi_transfer, "spi_transfer_response",
+                                  self.oid)
+    def printer_state(self, state):
+        if state == 'ready':
+            toolhead = self.printer.lookup_object('toolhead')
+            if self.stepper_name == 'extruder':
+                # TODO: I should probably get the extruder stepper in the gcode,
+                # in fact maybe I should get them all from it.  
+                self._stepper = toolhead.get_extruder().stepper
+                logging.info("TMC2130 %s: Stepper Found" % (self.stepper_name))
+            else:
+                steppers = toolhead.get_kinematics().get_steppers()
+                for s in steppers:
+                    if s.name == self.stepper_name[8]:
+                        self._stepper = s
+                        logging.info("TMC2130 %s: Stepper Found" % (self.stepper_name))
+                        break
+                if not self._stepper:
+                    logging.info("TMC2130 %s: Stepper NOT Found" % (self.stepper_name))
     def set_register(self, addr, val):
         data = [(addr | 0x80) & 0xff, (val >> 24) & 0xff, (val >> 16) & 0xff,
                 (val >> 8) & 0xff, val & 0xff]
         self.spi_send_cmd.send([self.oid, data])
+    def read_register(self, addr):
+        self._read_request = [addr & 0xff, 0x00, 0x00, 0x00, 0x00]
+        self.spi_transfer_cmd.send([self.oid, self._read_request])
+        return self._query_spi_transfer()
+    def _handle_spi_transfer(self, params):
+        with self._lock:
+            if self._is_data_tranfer:
+                resp = params.get('response', None)
+                if resp is not None:
+                    self._is_data_tranfer = False
+                    self._spi_data = resp
+                else:
+                    logging.info('TMC_2130 %s: Empty response' % self.stepper_name)
+            else:
+                self._is_data_tranfer = True
+                self.spi_transfer_cmd.send([self.oid, self._read_request])
+    def _query_spi_transfer(self):
+        reactor = self.printer.get_reactor()
+        current_time = reactor.monotonic()
+        end_time = current_time + SPI_XFER_TIMEOUT
+        retries = 0
+        while retries < SPI_RETRIES:
+            with self._lock:
+                if self._spi_data is not None:
+                    status, data = struct.unpack('>BI', self._spi_data)
+                    logging.info('TMC_2130 Status: %d' % status)
+                    self._spi_data = None
+                    return data
+            current_time = reactor.pause(reactor.monotonic() + .1)
+            if current_time >= end_time:
+                # Timed out, retry request
+                self.spi_transfer_cmd.send([self.oid, self._read_request])
+                end_time += SPI_XFER_TIMEOUT
+                retries += 1
+                logging.info('TMC_2130 %s: SPI Retry %d' % (self.stepper_name, retries))
+        logging.info('TMC_2130 %s: SPI Transfer Timed out' % self.stepper_name)
+        with self._lock:
+            self._spi_data = None
+            self._is_data_tranfer = False
+        return None
     def set_wave(self, fac, init=False):
         if fac < TMC_WAVE_FACTOR_MIN:
              fac = 0.0
@@ -233,7 +306,8 @@ class TMC2130:
                     self.set_register(REG_MSLUT0 + ((i >> 5) & 7), reg)
             else:
                 reg >>= 1
-        success_msg = "TMC2130: Wave factor on stepper [%s] set to: %f" % (self.stepper_name, fac)
+        success_msg = "TMC2130: Wave factor on stepper [%s] set to: %f" % \
+                      (self.stepper_name, fac)
         # configure MSLUTSEL
         if init:
             self.add_config_cmd(REG_MSLUTSEL, w[0] | (w[1] << 2) | (w[2] << 4) | (w[3] << 6)
@@ -256,12 +330,71 @@ class TMC2130:
             self.set_wave(self.gcode.get_float('FACTOR', params))
     cmd_TMC_SET_STEALTH_help = "Set TMC2130 Stealthchop velocity threshold"
     def cmd_TMC_SET_STEALTH(self, params):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
         velocity = self.gcode.get_float('THRESHOLD', params, 0., minval=0.)
         sc_threshold = 0
         if velocity > 0.:
             sc_threshold = int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
+        self.reg_GCONF = (velocity > 0.) << 2
+        self.set_register(REG_GCONF, self.reg_GCONF)
         #SET TPWMTHRS
         self.set_register(0x13, max(0, min(0xfffff, sc_threshold)))
+    def cmd_TMC_SET_STEP(self, params):
+        if self._stepper is None:
+            logging.info("TMC2130 %s: No stepper assigned, cannot step" % (self.stepper_name))
+            self.gcode.respond_info("Unable to move stepper, unknown stepper ID")
+            return
+        elif self._stepper.need_motor_enable:
+            self.gcode.respond_info("Cannot Move, motors off")
+            return
+        max_step = 4 * (1 << (8 - self.mres))
+        target_step = self.gcode.get_int('STEP', params, 0, minval=0)
+        target_step &= (max_step - 1)
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        mscnt = self.read_register(0x6A)
+        if mscnt is None:
+            self.gcode.respond_info("TMC2130 %s: Unable to read MSCNT register" % 
+                                    (self.stepper_name))
+            return
+        mscnt &= 0x3FF
+        steps = target_step - (mscnt >> self.mres)
+        # TODO: Accessing a private member is a no-no, but I have no choice.  I need
+        # to know the step direction. Maybe I can find another place to get this,
+        # perhaps from the config
+        sdir = 1 if self._stepper.mcu_stepper._invert_dir else 0
+        if steps < 0:
+            sdir ^= 1
+            steps *= -1
+        if steps > (max_step / 2):
+            sdir ^= 1
+            steps = max_step - steps
+        max_step = steps
+        mcu_pos = self._stepper.mcu_stepper.get_commanded_position()
+        print_time = toolhead.get_last_move_time()
+        # Move stepper to requested step in sine wave table
+        while max_step > 0:
+            self._stepper.step(print_time, sdir)
+            max_step -= 1
+            toolhead.reset_print_time(print_time + .001)
+            print_time = toolhead.get_last_move_time()
+        # reset position
+        self._stepper.mcu_stepper.set_position(mcu_pos)
+        toolhead.wait_moves()
+        # Check MSCNT
+        mscnt = self.read_register(0x6A)
+        if mscnt is not None:
+            mscnt &= 0x3FF
+            if (mscnt >> self.mres) != target_step:
+                self.gcode.respond_info("Unable to move to correct step")
+                logging.info("TMC2130 %s: TMC_SET_STEP Invalid MSCNT: %d, Target: %d" %
+                             (self.stepper_name, mscnt >> self.mres, target_step))
+            else:
+                self.gcode.respond_info("Correctly moved to step %d:" % target_step)
+        else:
+            self.gcode.respond_info("TMC2130 %s: Unable to read MSCNT register" % 
+                                    (self.stepper_name))
 
 # Endstop wrapper that enables tmc2130 "sensorless homing"
 class TMC2130VirtualEndstop:

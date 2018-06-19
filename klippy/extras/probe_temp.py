@@ -118,7 +118,7 @@ class ProbeTemp:
             self.toolhead.wait_moves()
             self.gcode.respond("Probe Temp: %.2f" % (self.get_current_temp()))
     def _get_heater_status(self):
-        extruder = self.printer.lookup_object('extruder0').get_heater()
+        extruder = self.toolhead.get_extruder().get_heater()
         bed = self.printer.lookup_object('heater_bed')
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
@@ -196,6 +196,7 @@ class ProbeCalibrationHelper:
         max_probe_temp = self.gcode.get_float('TARGET', params, 45., above=25.)
         bed_temp = self.gcode.get_float('B_TMP', params, 70., above=50.)
         extruder_temp = self.gcode.get_float('E_TMP', params, 200., above=0.)
+        timeout = self.gcode.get_int('TIMEOUT', params, 180, minval=0)
         if extruder_temp < 170.0:
             extruder_temp = None
         z_pos = 0.
@@ -224,8 +225,8 @@ class ProbeCalibrationHelper:
                                         (current_temp, z_pos), 5.)
             # Lower Head to absorb maximum heat
             self._move_toolhead_z(.2)
-            keep_alive = self.sensor.pause_for_temp(current_temp + .5, 
-                                                    timeout=180)
+            keep_alive = self.sensor.pause_for_temp(min(current_temp + .5, max_probe_temp), 
+                                                    timeout=timeout)
             current_temp = self.sensor.get_current_temp()                                 
         self.gcode.respond_info("Probe Calibration Complete!")
         if self.display:
