@@ -1,31 +1,28 @@
 #!/bin/bash
-# This script installs Klipper on a Raspberry Pi machine running the
-# OctoPi distribution.
+# This script installs Klipper on an x86_64 machine running the
+# CentOS 7 distribution.
 
 PYTHONDIR="${HOME}/klippy-env"
+SYSTEMDDIR="/etc/systemd/system"
 
 # Step 1: Install system packages
 install_packages()
 {
     # Packages for python cffi
-    PKGLIST="python-virtualenv virtualenv python-dev libffi-dev build-essential"
+    PKGLIST="python-virtualenv libffi-devel"
     # kconfig requirements
-    PKGLIST="${PKGLIST} libncurses-dev"
+    PKGLIST="${PKGLIST} ncurses-devel"
     # hub-ctrl
-    PKGLIST="${PKGLIST} libusb-dev"
+    PKGLIST="${PKGLIST} libusb-devel"
     # AVR chip installation and building
-    PKGLIST="${PKGLIST} avrdude gcc-avr binutils-avr avr-libc"
+    PKGLIST="${PKGLIST} avrdude gcc-avr32-linux-gnu binutils-avr32-linux-gnu avr-libc"
     # ARM chip installation and building
-    PKGLIST="${PKGLIST} bossa-cli stm32flash libnewlib-arm-none-eabi"
-    PKGLIST="${PKGLIST} gcc-arm-none-eabi binutils-arm-none-eabi"
-
-    # Update system package info
-    report_status "Running apt-get update..."
-    sudo apt-get update
+    # CentOS/Fedora do not appear to have these packages available at this time
+    PKGLIST="${PKGLIST} arm-none-eabi-gcc-cs arm-none-eabi-newlib"
 
     # Install desired packages
     report_status "Installing packages..."
-    sudo apt-get install --yes ${PKGLIST}
+    sudo yum install -y ${PKGLIST}
 }
 
 # Step 2: Create python virtual environment
@@ -43,35 +40,37 @@ create_virtualenv()
 # Step 3: Install startup script
 install_script()
 {
+# Create systemd service file
     report_status "Installing system start script..."
-    sudo cp "${SRCDIR}/scripts/klipper-start.sh" /etc/init.d/klipper
-    sudo update-rc.d klipper defaults
+    sudo /bin/sh -c "cat > $SYSTEMDDIR/klipper.service" << EOF
+#Systemd service file for klipper
+[Unit]
+Description=Starts klipper on startup
+After=network.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=$USER
+RemainAfterExit=yes
+ExecStart=${PYTHONDIR}/bin/python ${SRCDIR}/klippy/klippy.py ${HOME}/printer.cfg -l /var/log/klippy.log
+EOF
+# Use systemctl to enable the klipper systemd service script
+    sudo systemctl enable klipper.service
 }
 
-# Step 4: Install startup script config
-install_config()
-{
-    DEFAULTS_FILE=/etc/default/klipper
-    [ -f $DEFAULTS_FILE ] && return
-
-    report_status "Installing system start configuration..."
-    sudo /bin/sh -c "cat > $DEFAULTS_FILE" <<EOF
-# Configuration for /etc/init.d/klipper
+# Configuration for systemctl klipper
 
 KLIPPY_USER=$USER
 
-KLIPPY_EXEC=${PYTHONDIR}/bin/python
-
-KLIPPY_ARGS="${SRCDIR}/klippy/klippy.py ${HOME}/printer.cfg -l /tmp/klippy.log"
-
-EOF
-}
 
 # Step 5: Start host software
 start_software()
 {
     report_status "Launching Klipper host software..."
-    sudo /etc/init.d/klipper restart
+    sudo systemctl klipper restart
 }
 
 # Helper functions
@@ -99,5 +98,4 @@ verify_ready
 install_packages
 create_virtualenv
 install_script
-install_config
 start_software
