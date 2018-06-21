@@ -50,17 +50,17 @@ class TMC2130:
         steps = {'256': 0, '128': 1, '64': 2, '32': 3, '16': 4,
                  '8': 5, '4': 6, '2': 7, '1': 8}
         self.mres = config.getchoice('microsteps', steps)
-        interpolate = config.getboolean('interpolate', True)
+        self.interpolate = config.getboolean('interpolate', True)
         sc_velocity = config.getfloat('stealthchop_threshold', 0., minval=0.)
         sc_threshold = self.velocity_to_clock(config, sc_velocity)
         wave_factor = config.getfloat('linearity_correction', 0., minval=0., maxval=1.2)
         iholddelay = config.getint('driver_IHOLDDELAY', 8, minval=0, maxval=15)
         tpowerdown = config.getint('driver_TPOWERDOWN', 0, minval=0, maxval=255)
-        blank_time_select = config.getint('driver_BLANK_TIME_SELECT', 1,
+        self.blank_time_select = config.getint('driver_BLANK_TIME_SELECT', 1,
                                           minval=0, maxval=3)
-        toff = config.getint('driver_TOFF', 4, minval=1, maxval=15)
-        hend = config.getint('driver_HEND', 7, minval=0, maxval=15)
-        hstrt = config.getint('driver_HSTRT', 0, minval=0, maxval=7)
+        self.toff = config.getint('driver_TOFF', 4, minval=1, maxval=15)
+        self.hend = config.getint('driver_HEND', 7, minval=0, maxval=15)
+        self.hstrt = config.getint('driver_HSTRT', 0, minval=0, maxval=7)
         sgt = config.getint('driver_SGT', 0, minval=-64, maxval=63) & 0x7f
         pwm_scale = config.getboolean('driver_PWM_AUTOSCALE', True)
         pwm_freq = config.getint('driver_PWM_FREQ', 1, minval=0, maxval=3)
@@ -77,20 +77,21 @@ class TMC2130:
         self._lock = threading.Lock()
         self.mcu.add_config_object(self)
         # calculate current
-        vsense = False
-        irun = self.current_bits(run_current, sense_resistor, vsense)
-        ihold = self.current_bits(hold_current, sense_resistor, vsense)
+        self.vsense = False
+        irun = self.current_bits(run_current, sense_resistor, self.vsense)
+        ihold = self.current_bits(hold_current, sense_resistor, self.vsense)
         if irun < 16 and ihold < 16:
-            vsense = True
-            irun = self.current_bits(run_current, sense_resistor, vsense)
-            ihold = self.current_bits(hold_current, sense_resistor, vsense)
+            self.vsense = True
+            irun = self.current_bits(run_current, sense_resistor, self.vsense)
+            ihold = self.current_bits(hold_current, sense_resistor, self.vsense)
         # configure GCONF
         self.reg_GCONF = (sc_velocity > 0.) << 2
         self.add_config_cmd(REG_GCONF, self.reg_GCONF)
         # configure CHOPCONF
         self.add_config_cmd(
-            0x6c, toff | (hstrt << 4) | (hend << 7) | (blank_time_select << 15)
-            | (vsense << 17) | (self.mres << 24) | (interpolate << 28))
+            0x6c, self.toff | (self.hstrt << 4) | (self.hend << 7) 
+            | (self.blank_time_select << 15) | (self.vsense << 17) 
+            | (self.mres << 24) | (self.interpolate << 28))
         # configure IHOLD_IRUN
         self.add_config_cmd(0x10, ihold | (irun << 8) | (iholddelay << 16))
         # configure TPOWERDOWN
@@ -115,6 +116,9 @@ class TMC2130:
         self.gcode.register_mux_command(
             "TMC_SET_STEP", "STEPPER", self.stepper_name,
             self.cmd_TMC_SET_STEP)
+        self.gcode.register_mux_command(
+            "TMC_SET_CHOPPER", "STEPPER", self.stepper_name,
+            self.cmd_TMC_SET_CHOPPER)
     def add_config_cmd(self, addr, val):
         self.mcu.add_config_cmd("spi_send oid=%d data=%02x%08x" % (
             self.oid, (addr | 0x80) & 0xff, val & 0xffffffff), is_init=True)
@@ -395,6 +399,18 @@ class TMC2130:
         else:
             self.gcode.respond_info("TMC2130 %s: Unable to read MSCNT register" % 
                                     (self.stepper_name))
+    def cmd_TMC_SET_CHOPPER(self, params):
+        self.toff = self.gcode.get_int('TOFF', params, self.toff, minval=1, maxval=15)
+        self.blank_time_select = self.gcode.get_int('BTS', params, self.blank_time_select,
+                                                    minval=0, maxval=3)
+        self.hend = self.gcode.get_int('HEND', params, self.hend, minval=0, maxval=15)
+        self.hstrt = self.gcode.get_int('HSTART', params, self.hstrt, minval=0, maxval=7)
+        # configure CHOPCONF
+        self.set_register(
+            0x6c, self.toff | (self.hstrt << 4) | (self.hend << 7) 
+            | (self.blank_time_select << 15) | (self.vsense << 17) 
+            | (self.mres << 24) | (self.interpolate << 28))
+        self.gcode.respond_info("REG CHOPCONF reset")
 
 # Endstop wrapper that enables tmc2130 "sensorless homing"
 class TMC2130VirtualEndstop:
