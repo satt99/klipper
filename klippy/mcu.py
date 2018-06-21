@@ -18,8 +18,8 @@ class MCU_stepper:
         self._step_pin = pin_params['pin']
         self._invert_step = pin_params['invert']
         self._dir_pin = self._invert_dir = None
-        self._mcu_position_offset = 0.
-        self._step_dist = 0.
+        self._commanded_pos = self._mcu_position_offset = 0.
+        self._step_dist = self._inv_step_dist = 1.
         self._min_stop_interval = 0.
         self._reset_cmd_id = self._get_position_cmd = None
         ffi_main, self._ffi_lib = chelper.get_ffi()
@@ -39,6 +39,7 @@ class MCU_stepper:
         self._min_stop_interval = min_stop_interval
     def setup_step_distance(self, step_dist):
         self._step_dist = step_dist
+        self._inv_step_dist = 1. / step_dist
     def setup_itersolve(self, sk):
         old_sk = self._stepper_kinematics
         self._stepper_kinematics = sk
@@ -72,14 +73,16 @@ class MCU_stepper:
     def get_step_dist(self):
         return self._step_dist
     def set_position(self, pos):
-        self._mcu_position_offset += self.get_commanded_position() - pos
-        self._ffi_lib.itersolve_set_commanded_pos(self._stepper_kinematics, pos)
+        if self._stepper_kinematics is not None:
+            self._ffi_lib.itersolve_set_commanded_pos(
+                self._stepper_kinematics, pos)
+        steppos = pos * self._inv_step_dist
+        self._mcu_position_offset += self._commanded_pos - steppos
+        self._commanded_pos = steppos
     def get_commanded_position(self):
-        return self._ffi_lib.itersolve_get_commanded_pos(
-            self._stepper_kinematics)
+        return self._commanded_pos * self._step_dist
     def get_mcu_position(self):
-        pos_delta = self.get_commanded_position() + self._mcu_position_offset
-        mcu_pos = pos_delta / self._step_dist
+        mcu_pos = self._commanded_pos + self._mcu_position_offset
         if mcu_pos >= 0.:
             return int(mcu_pos + 0.5)
         return int(mcu_pos - 0.5)
@@ -112,15 +115,15 @@ class MCU_stepper:
             return
         params = self._get_position_cmd.send_with_response(
             [self._oid], response='stepper_position', response_oid=self._oid)
-        pos = params['pos'] * self._step_dist
+        pos = params['pos']
         if self._invert_dir:
             pos = -pos
-        self._ffi_lib.itersolve_set_commanded_pos(
-            self._stepper_kinematics, pos - self._mcu_position_offset)
+        self._commanded_pos = pos - self._mcu_position_offset
     def step_itersolve(self, cmove):
-        ret = self._itersolve_gen_steps(self._stepper_kinematics, cmove)
-        if ret:
+        count = self._itersolve_gen_steps(self._stepper_kinematics, cmove)
+        if count == STEPCOMPRESS_ERROR_RET:
             raise error("Internal error in stepcompress")
+        self._commanded_pos += count
 
 class MCU_endstop:
     class TimeoutError(Exception):
