@@ -16,7 +16,6 @@ int stepcompress_set_homing(struct stepcompress *sc, uint64_t homing_clock);
 int stepcompress_queue_msg(struct stepcompress *sc, uint32_t *data, int len);
 double stepcompress_get_mcu_freq(struct stepcompress *sc);
 uint32_t stepcompress_get_oid(struct stepcompress *sc);
-int stepcompress_get_step_dir(struct stepcompress *sc);
 
 struct queue_append {
     struct stepcompress *sc;
@@ -27,7 +26,6 @@ struct queue_append queue_append_start(
     struct stepcompress *sc, double print_time, double adjust);
 void queue_append_finish(struct queue_append qa);
 int queue_append(struct queue_append *qa, double step_clock);
-int queue_append_set_next_step_dir(struct queue_append *qa, int sdir);
 
 struct serialqueue;
 struct steppersync *steppersync_alloc(
