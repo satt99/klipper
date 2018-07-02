@@ -225,7 +225,7 @@ class BedMeshCalibrate:
         self.gcode.run_script_from_command("G28")
         self.probe_helper.start_probe()
         self.gcode.run_script_from_command("G1 X0 Y0 Z0.4 F3000")
-    def get_position(self):
+    def get_probed_position(self):
         kin = self.printer.lookup_object('toolhead').get_kinematics()
         return kin.calc_position()
     def finalize(self, z_offset, positions):
