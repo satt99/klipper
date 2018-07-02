@@ -165,7 +165,8 @@ class TMC2130:
                 self.add_config_cmd(reg[0], reg[1])
             else:
                 self.set_register(reg[0], reg[1])
-                self.gcode.respond_info(msg)
+        if not init:
+            self.gcode.respond_info(msg)
         logging.info(msg)
     def _set_wave(self, fac, init=False):
         if fac < TMC_WAVE_FACTOR_MIN:
