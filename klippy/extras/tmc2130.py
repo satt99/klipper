@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
+import pins
 
 TMC_FREQUENCY=13200000.
 REG_GCONF=0x00
@@ -12,6 +13,14 @@ GCONF_DIAG1_STALL=1<<8
 REG_TCOOLTHRS=0x14
 REG_COOLCONF=0x6d
 REG_PWMCONF=0x70
+REG_MSLUTSTART=0x69
+REG_MSLUT0=0x60
+REG_MSLUTSEL = 0x68
+
+# Constants for sine wave correction
+TMC_WAVE_FACTOR_MIN = 1.005
+TMC_WAVE_FACTOR_MAX = 1.2
+TMC_WAVE_AMP = 247
 
 ReadRegisters = {
     0x00: "GCONF", 0x01: "GSTAT", 0x04: "IOIN", 0x12: "TSTEP", 0x2d: "XDIRECT",
@@ -33,10 +42,13 @@ class TMC2130:
         pin = cs_pin_params['pin']
         self.oid = self.mcu.create_oid()
         # Add DUMP_TMC command
-        gcode = self.printer.lookup_object("gcode")
-        gcode.register_mux_command(
-            "DUMP_TMC", "STEPPER", self.name,
-            self.cmd_DUMP_TMC, desc=self.cmd_DUMP_TMC_help)
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_mux_command(
+                 "DUMP_TMC", "STEPPER", self.name,
+                 self.cmd_DUMP_TMC, desc=self.cmd_DUMP_TMC_help)
+        self.gcode.register_mux_command(
+                 "TMC_SET_WAVE", "STEPPER", self.name,
+                 self.cmd_TMC_SET_WAVE, desc=self.cmd_TMC_SET_WAVE_help)
         # Setup driver registers
         self.mcu.add_config_cmd(
             "config_spi oid=%d bus=%d pin=%s mode=%d rate=%d shutdown_msg=" % (
@@ -50,6 +62,7 @@ class TMC2130:
         self.mres = config.getchoice('microsteps', steps)
         interpolate = config.getboolean('interpolate', True)
         sc_velocity = config.getfloat('stealthchop_threshold', 0., minval=0.)
+        wave_factor = config.getfloat('linearity_correction', 0., minval=0., maxval=1.2)
         sc_threshold = self.velocity_to_clock(config, sc_velocity)
         iholddelay = config.getint('driver_IHOLDDELAY', 8, minval=0, maxval=15)
         tpowerdown = config.getint('driver_TPOWERDOWN', 0, minval=0, maxval=255)
@@ -94,6 +107,8 @@ class TMC2130:
         # configure PWMCONF
         self.add_config_cmd(REG_PWMCONF, pwm_ampl | (pwm_grad << 8)
                             | (pwm_freq << 16) | (pwm_scale << 18))
+        # configure Linearity Correction
+        self._set_wave(wave_factor, True)
     def add_config_cmd(self, addr, val):
         self.mcu.add_config_cmd("spi_send oid=%d data=%02x%08x" % (
             self.oid, (addr | 0x80) & 0xff, val & 0xffffffff), is_init=True)
@@ -130,6 +145,145 @@ class TMC2130:
         data = [(addr | 0x80) & 0xff, (val >> 24) & 0xff, (val >> 16) & 0xff,
                 (val >> 8) & 0xff, val & 0xff]
         self.spi_send_cmd.send([self.oid, data])
+    def _set_default_wave(self, init=False):
+        # default wave regs from page 79 of TMC2130 datasheet
+        msg = "TMC2130: Wave factor on stepper [%s] set to default" % (self.name)
+        regs = [
+            (REG_MSLUTSTART, 0x00F70000),
+            (REG_MSLUTSEL, 0xFFFF8056),
+            (0x60, 0xAAAAB554), #MSLUT0
+            (0x61, 0x4A9554AA), #MSLUT1
+            (0x62, 0x24492929), #MSLUT2
+            (0x63, 0x10104222), #MSLUT3
+            (0x64, 0xFBFFFFFF), #MSLUT4
+            (0x65, 0xB5BB777D), #MSLUT5
+            (0x66, 0x49295556), #MSLUT6
+            (0x67, 0x00404222)  #MSLUT7
+        ]
+        for reg in regs:
+            if init:
+                self.add_config_cmd(reg[0], reg[1])
+            else:
+                self.set_register(reg[0], reg[1])
+                self.gcode.respond_info(msg)
+        logging.info(msg)
+    def _set_wave(self, fac, init=False):
+        if fac < TMC_WAVE_FACTOR_MIN:
+             fac = 0.0
+        elif fac > TMC_WAVE_FACTOR_MAX:
+            fac = TMC_WAVE_FACTOR_MAX
+        if fac == 0.:
+            # default wave
+            self._set_default_wave(init)
+            return
+        error = None
+        vA = 0
+        prevA = 0
+        delta0 = 0
+        delta1 = 1
+        w = [1, 1, 1, 1]
+        x = [255, 255, 255]
+        seg = 0
+        bitVal = 0
+        deltaA = 0
+        reg = 0
+        # configure MSLUTSTART
+        if init:
+            self.add_config_cmd(REG_MSLUTSTART, (TMC_WAVE_AMP << 16))
+        else:
+            self.set_register(REG_MSLUTSTART, (TMC_WAVE_AMP << 16))
+        for i in range(256):
+            if (i & 31) == 0:
+                reg = 0
+            # Prusa corrected wave
+            vA = int(TMC_WAVE_AMP * math.pow(math.sin(2*math.pi*i/1024), fac) + .5)
+            deltaA = vA - prevA
+            prevA = vA
+            bitVal = -1
+            if deltaA == delta0:
+                bitVal = 0
+            elif deltaA == delta1:
+                bitVal = 1
+            else:
+                if deltaA < delta0:
+                    #switch w bit down
+                    bitVal = 0
+                    if deltaA == -1:
+                        delta0 = -1
+                        delta1 = 0
+                        w[seg+1] = 0
+                    elif deltaA == 0:
+                        delta0 = 0
+                        delta1 = 1
+                        w[seg+1] = 1
+                    elif deltaA == 1:
+                        delta0 = 1
+                        delta1 = 2
+                        w[seg+1] = 2
+                    else:
+                        bitVal = -1
+                    if bitVal >= 0:
+                        x[seg] = i
+                        seg += 1
+                elif deltaA > delta1:
+                    #switch w bit up
+                    bitVal = 1
+                    if deltaA == 1:
+                        delta0 = 0
+                        delta1 = 1
+                        w[seg+1] = 1
+                    elif deltaA == 2:
+                        delta0 = 1
+                        delta1 = 2
+                        w[seg+1] = 2
+                    elif deltaA == 3:
+                        delta0 = 2
+                        delta1 = 3
+                        w[seg+1] = 3
+                    else:
+                        bitVal = -1
+                    if bitVal >= 0:
+                        x[seg] = i
+                        seg += 1
+            if bitVal < 0:
+                # delta out of range
+                error = "TMC2130: Error setting Sine Wave, Delta Out of Range"
+                break
+            if seg > 3: # TODO: should this be greater than 2?
+                # segment out of range
+                error = "TMC2130: Error setting Sine Wave, Segment Out of Range"
+                break
+            if bitVal == 1:
+                reg |= 0x80000000
+            if (i & 31) == 31:
+                #configure MSLUT
+                if init:
+                    self.add_config_cmd(REG_MSLUT0 + ((i >> 5) & 7), reg)
+                else:
+                    self.set_register(REG_MSLUT0 + ((i >> 5) & 7), reg)
+            else:
+                reg >>= 1
+        success_msg = "TMC2130: Wave factor on stepper [%s] set to: %f" % \
+                      (self.name, fac)
+        # configure MSLUTSEL
+        if init:
+            self.add_config_cmd(REG_MSLUTSEL, w[0] | (w[1] << 2) | (w[2] << 4) | (w[3] << 6)
+                                | (x[0] << 8) | (x[1] << 16) | (x[2] << 24))
+            if error:
+                raise self.printer.config.error(error)
+        else:
+            self.set_register(REG_MSLUTSEL, w[0] | (w[1] << 2) | (w[2] << 4) | (w[3] << 6)
+                              | (x[0] << 8) | (x[1] << 16) | (x[2] << 24))
+            if error:
+                logging.error(error)
+                self.gcode.respond_info(error)
+                return
+            else:
+                self.gcode.respond_info(success_msg)
+        logging.info(success_msg)
+    cmd_TMC_SET_WAVE_help = "Set wave correction factor for TMC2130 driver"
+    def cmd_TMC_SET_WAVE(self, params):
+        self._set_wave(self.gcode.get_float('FACTOR', params))
     cmd_DUMP_TMC_help = "Read and display TMC2130 registers"
     def cmd_DUMP_TMC(self, params):
         self.printer.lookup_object('toolhead').get_last_move_time()
