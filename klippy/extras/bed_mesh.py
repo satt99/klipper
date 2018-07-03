@@ -13,6 +13,7 @@ def constrain(val, min_val, max_val):
     return min(max_val, max(min_val, val))
 
 class BedMesh:
+    FADE_DISABLE = 0x7FFFFFFF
     def __init__(self, config):
         self.printer = config.get_printer()
         self.z_adjust = 0.
@@ -21,13 +22,14 @@ class BedMesh:
         self.toolhead = None
         self.horizontal_move_z = config.getfloat('horizontal_move_z', 5.)
         fade_start = config.getfloat('fade_start', 1., minval=0.)
-        self.fade_end = config.getfloat('fade_end', 10.)
+        fade_end = config.getfloat('fade_end', 10.)
         self.gcode = self.printer.lookup_object('gcode')
         self.splitter = MoveSplitter(config, self.gcode, fade_start, 
-                                     self.fade_end)
-        if self.fade_end <= fade_start:
+                                     fade_end)
+        self.adj_stop = fade_end
+        if fade_end <= fade_start:
             # Never Fade Mesh
-            self.fade_end = 999999
+            self.adj_stop = self.FADE_DISABLE         
         self.gcode.register_command(
             'BED_MESH_OUTPUT', self.cmd_BED_MESH_OUTPUT,
             desc=self.cmd_BED_MESH_OUTPUT_help)
@@ -56,7 +58,7 @@ class BedMesh:
             x, y, z, e = self.toolhead.get_position()
             return [x, y, z - self.z_adjust, e]
     def move(self, newpos, speed):
-        fade_done = ((newpos[2] - self.gcode.base_position[2]) >= self.fade_end)
+        fade_done = ((newpos[2] - self.gcode.base_position[2]) >= self.adj_stop)
         if self.z_mesh is None or fade_done:
             # No mesh calibrated, or mesh leveling phased out.
             self.z_adjust = 0.
