@@ -20,9 +20,14 @@ class BedMesh:
         self.z_mesh = None
         self.toolhead = None
         self.horizontal_move_z = config.getfloat('horizontal_move_z', 5.)
+        fade_start = config.getfloat('fade_start', 1., minval=0.)
         self.fade_end = config.getfloat('fade_end', 10.)
         self.gcode = self.printer.lookup_object('gcode')
-        self.splitter = MoveSplitter(config, self.gcode)
+        self.splitter = MoveSplitter(config, self.gcode, fade_start, 
+                                     self.fade_end)
+        if self.fade_end <= fade_start:
+            # Never Fade Mesh
+            self.fade_end = 999999
         self.gcode.register_command(
             'BED_MESH_OUTPUT', self.cmd_BED_MESH_OUTPUT,
             desc=self.cmd_BED_MESH_OUTPUT_help)
@@ -30,12 +35,7 @@ class BedMesh:
         self.gcode.register_command(
             'G81', self.cmd_BED_MESH_OUTPUT,
             desc=self.cmd_BED_MESH_OUTPUT_help)
-        #TODO: Remove mesh debug after mesh testing is complete
-        self.debug_mesh = config.getboolean('debug_mesh', False)
-        if not self.debug_mesh:
-            self.gcode.set_move_transform(self)
-        else:
-            logging.info("bed_mesh: Mesh Debug Mode, moves will not transform")
+        self.gcode.set_move_transform(self)
     def printer_state(self, state):
         if state == 'connect':
             self.toolhead = self.printer.lookup_object('toolhead')
@@ -56,8 +56,8 @@ class BedMesh:
             x, y, z, e = self.toolhead.get_position()
             return [x, y, z - self.z_adjust, e]
     def move(self, newpos, speed):
-        if self.z_mesh is None or \
-           (newpos[2] - self.gcode.base_position[2]) >= self.fade_end:
+        fade_done = ((newpos[2] - self.gcode.base_position[2]) >= self.fade_end)
+        if self.z_mesh is None or fade_done:
             # No mesh calibrated, or mesh leveling phased out.
             self.z_adjust = 0.
             self.toolhead.move(newpos, speed)
@@ -92,17 +92,9 @@ class BedMesh:
                     msg += "  %f" % (z)
                 msg += "\n"
             self.gcode.respond(msg)
-            # TODO: Remove after debug    
-            if self.debug_mesh:
-                self.z_mesh._sample_bicubic(self.calibrate.probed_z_table)
-                msg = "Cubic Spline comparison:\n"
-                for y_line in range(self.z_mesh.mesh_x_count - 1, -1, -1):
-                    for z in self.z_mesh.mesh_z_table[y_line]:
-                        msg += "  %f" % (z)
-                    msg += "\n"
-                self.gcode.respond(msg)
 
 class BedMeshCalibrate:
+    ALGOS = ['lagrange', 'bicubic']
     def __init__(self, config, bedmesh):
         self.printer = config.get_printer()
         self.bedmesh = bedmesh
@@ -215,6 +207,9 @@ class BedMeshCalibrate:
         self.probe_params['mesh_x_pps'] = config.getint('mesh_x_pps', None, minval=0)
         self.probe_params['mesh_y_pps'] = config.getint('mesh_y_pps', None, minval=0)
         self.probe_params['algo'] = config.get('algorithm', 'lagrange').strip().lower()
+        if self.probe_params['algo'] not in self.ALGOS:
+            raise config.error("bed_mesh: Unknown algorithm <%s>" %
+                              (self.probe_params['algo']))
         self.probe_params['tension'] = config.getfloat('bicubic_tension', .2, 
                                                         minval=0., maxval=2.)
     cmd_BED_MESH_CALIBRATE_help = "Perform Mesh Bed Leveling"
@@ -256,9 +251,9 @@ class BedMeshCalibrate:
             self.gcode.respond_info("Mesh Bed Leveling Complete")
 
 class MoveSplitter:
-    def __init__(self, config, gcode):
-        self.fade_start = config.getfloat('fade_start', 1.)
-        self.fade_end = config.getfloat('fade_end', 10.)
+    def __init__(self, config, gcode, fade_start, fade_end):
+        self.fade_start = fade_start
+        self.fade_end = fade_end
         self.fade_dist = self.fade_end - self.fade_start
         self.split_delta_z = config.getfloat('split_delta_z', .025, minval=0.01)
         self.move_check_distance = config.getfloat('move_check_distance', 5., minval=3.)
@@ -272,8 +267,9 @@ class MoveSplitter:
         self.current_pos = list(prev_pos)
         # Z adjustment will start fading out after Z=1mm, until it reaches z_max
         real_z = next_pos[2] - self.gcode.base_position[2]
-        self.z_factor = 1. if (real_z <= self.fade_start) else \
-                              ((self.fade_end - real_z) / self.fade_dist)
+        self.z_factor = 1. 
+        if real_z > self.fade_start and self.fade_end > self.fade_start:
+            self.z_factor = (self.fade_end - real_z) / self.fade_dist
         self.z_offset = self.z_factor  * \
                         self.z_mesh.get_z(self.prev_pos[0] - self.gcode.base_position[0], 
                                           self.prev_pos[1] - self.gcode.base_position[1])
