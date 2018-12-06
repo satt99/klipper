@@ -120,6 +120,9 @@ config HAVE_GPIO_HARD_PWM
 config HAVE_GPIO_BITBANGING
     bool
     default n
+config HAVE_SERVO_STEPPER
+    bool
+    default n
 
 config INLINE_STEPPER_HACK
     # Enables gcc to inline stepper_event() into the main timer irq handler
