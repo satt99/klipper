@@ -50,15 +50,23 @@ class PrinterStepper:
         self.name = config.get_name()
         self.need_motor_enable = True
         # Stepper definition
-        ppins = printer.lookup_object('pins')
-        step_pin = config.get('step_pin')
-        self.mcu_stepper = mcu_stepper = ppins.setup_pin('stepper', step_pin)
-        dir_pin = config.get('dir_pin')
-        dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
-        mcu_stepper.setup_dir_pin(dir_pin_params)
-        step_dist = config.getfloat('step_distance', above=0.)
-        mcu_stepper.setup_step_distance(step_dist)
-        self.enable = lookup_enable_pin(ppins, config.get('enable_pin', None))
+        mechaduino = printer.lookup_object('mechaduino ' + self.name, None)
+        if mechaduino is not None:
+            # XXX - this is a temporary hack
+            mcu_stepper = mechaduino.get_mcu_stepper()
+            self.enable = mechaduino
+        else:
+            ppins = printer.lookup_object('pins')
+            step_pin = config.get('step_pin')
+            mcu_stepper = ppins.setup_pin('stepper', step_pin)
+            dir_pin = config.get('dir_pin')
+            dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
+            mcu_stepper.setup_dir_pin(dir_pin_params)
+            step_dist = config.getfloat('step_distance', above=0.)
+            mcu_stepper.setup_step_distance(step_dist)
+            self.enable = lookup_enable_pin(ppins,
+                                            config.get('enable_pin', None))
+        self.mcu_stepper = mcu_stepper
         # Register STEPPER_BUZZ command
         force_move = printer.try_load_module(config, 'force_move')
         force_move.register_stepper(self)
