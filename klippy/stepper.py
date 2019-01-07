@@ -57,17 +57,6 @@ class PrinterStepper:
         dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
         mcu_stepper.setup_dir_pin(dir_pin_params)
         step_dist = config.getfloat('step_distance', above=0.)
-        if config.getboolean('scale_with_msteps', False):
-            tmc_cfg_name = "tmc2130 " + self.name
-            if config.has_section(tmc_cfg_name):
-                tmc_conf = config.getsection(tmc_cfg_name)
-                msteps = tmc_conf.getfloat('microsteps')
-                step_dist /= msteps
-                logging.info("Set step distance on [%s] to (%.6f)"
-                             % (self.name, step_dist))
-            else:
-                logging.info("Unable to find tmc2130 section for [%s],"
-                             " cannot scale step distance")
         mcu_stepper.setup_step_distance(step_dist)
         self.enable = lookup_enable_pin(ppins, config.get('enable_pin', None))
         # Register STEPPER_BUZZ command

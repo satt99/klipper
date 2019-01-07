@@ -12,9 +12,9 @@ TOOL_FILE = expanduser('~') + "/s3l3ctor_tool.pkl"
 
 
 STEPPERS = {
-    'tumbler' : 0,
-    'drive' : 1,
-    'spare' : 2
+    'tumbler': 0,
+    'drive': 1,
+    'spare': 2
 }
 
 DISENGAGE_DIST = 15.
@@ -22,7 +22,7 @@ DISENGAGE_DIST = 15.
 class error(Exception):
     pass
 
-#TODO: need to log position after pausing a print
+# TODO: need to log position after pausing a print
 class SixOhTwo:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -33,20 +33,21 @@ class SixOhTwo:
         idler_offset = config.getfloat('idler_offset', 22., above=0.)
         idler_spacing = config.getfloat('idler_spacing', 100., above=0.)
         self.idler_positions = [
-            (idler_offset + i*idler_spacing) for i in range(5, -1, -1)
-            ]
+            (idler_offset + i*idler_spacing) for i in range(5, -1, -1)]
         self.tumbler_velocity = config.getfloat('tumbler_velocity', 10.)
-        self.change_retract_dist = config.getfloat('change_retract_dist', 45.) * -1.
+        self.change_retract_dist = config.getfloat(
+            'change_retract_dist', 45.) * -1.
         self.change_extrude_dist = config.getfloat('change_extrude_dist', 45.)
         self.synced_dist = config.getfloat('synced_dist', 10.)
         self.drive_velocity = config.getfloat('drive_velocity', 50.)
         self.synced_velocity = config.getfloat('synced_velocity', 20.)
         self._init_tool()
         self.engaged = False
-        #TODO: add help to the commands
+        # TODO: add help to the commands
         self.gcode.register_command('MOVE_SELECTOR', self.cmd_MOVE_SELECTOR)
         self.gcode.register_command('HOME_SELECTOR', self.cmd_HOME_SELECTOR)
-        self.gcode.register_command('SELECTOR_MOTOR_OFF', self.cmd_SELECTOR_MOTOR_OFF)
+        self.gcode.register_command(
+            'SELECTOR_MOTOR_OFF', self.cmd_SELECTOR_MOTOR_OFF)
         self.gcode.register_command('PAUSE_TEST', self.cmd_PAUSE_TEST)
         self.gcode.register_command('A602', self.cmd_A602)
     def printer_state(self, state):
@@ -62,7 +63,7 @@ class SixOhTwo:
             self.save_tool()
         if t_file:
             try:
-                tool =  pickle.load(t_file)['current_tool']
+                tool = pickle.load(t_file)['current_tool']
             except:
                 tool = None
             if tool is not None and tool >= 0 and tool < 5:
@@ -169,7 +170,7 @@ class SixOhTwo:
         self.disengage()
         self.save_tool()
     def cmd_A602(self, params):
-        if not 'G' in params and 'T' in params:
+        if 'G' not in params and 'T' in params:
             # Change Tool
             idx = self.gcode.get_int('T', params)
             self.change_tool(idx)
@@ -177,7 +178,8 @@ class SixOhTwo:
             cmd_type = self.gcode.get_int('G', params)
             if cmd_type == 0 or cmd_type == 1:
                 # Move distance (relative)
-                speed = self.gcode.get_float('F', params, 1200., above=0.) / 60.
+                speed = self.gcode.get_float(
+                    'F', params, 1200., above=0.) / 60.
                 if 'T'in params:
                     dist = self.gcode.get_float('T', params)
                     if dist:
@@ -187,7 +189,8 @@ class SixOhTwo:
                     ex_dist = self.gcode.get_float('E', params, 0.)
                     if ex_dist:
                         if ex_dist != dist:
-                            self.gcode.respond_info("If syncing extrusion distance must be equal")
+                            self.gcode.respond_info(
+                                "If syncing extrusion distance must be equal")
                         else:
                             self.move_drive(dist, speed, True)
                     elif dist:
@@ -211,7 +214,8 @@ class SixOhTwo:
                     self.home_tumbler()
                     self.home_drive(endstop)
             else:
-                self.gcode.respond_info("Unknown selector command G%d" % cmd_type)
+                self.gcode.respond_info(
+                    "Unknown selector command G%d" % cmd_type)
         elif 'M' in params:
             cmd_type = self.gcode.get_int('M', params)
             if cmd_type == 84 or cmd_type == 18:
@@ -284,6 +288,11 @@ class SelectorTool:
         self.get_extruder = self.toolhead.get_extruder
         self.dwell = self.toolhead.dwell
         self.wait_moves = self.toolhead.wait_moves
+    def lookup_object(self, name):
+        return self
+    def send_event(self, event, *params):
+        # eat the homing event, we aren't doing phased endstops
+        return [False]
     def save_extruder_positon(self):
         self.extrude_pos = self.toolhead.get_extruder().extrude_pos
     def reset_extruder_pos(self):
@@ -339,7 +348,7 @@ class SelectorKinematics:
         extruder_es = config.get('extruder_endstop', None)
         if extruder_es is not None:
             ex_pin = ppins.setup_pin('endstop', extruder_es)
-            self.rails[1].add_to_endstop(ex_pin)   
+            self.rails[1].add_to_endstop(ex_pin)
         self.drive_endstop = self.rails[1].get_endstops()[0]
         self.need_motor_enable = True
         self.max_velocity, self.max_accel = toolhead.get_max_velocity()
@@ -389,20 +398,13 @@ class SelectorKinematics:
         # Determine moves
         position_min, position_max = rail.get_range()
         hi = rail.get_homing_info()
-        if hi.positive_dir:
-            pos = hi.position_endstop - 1.5*(hi.position_endstop - position_min)
-            rpos = hi.position_endstop - hi.retract_dist
-            r2pos = rpos - hi.retract_dist
-        else:
-            pos = hi.position_endstop + 1.5*(position_max - hi.position_endstop)
-            rpos = hi.position_endstop + hi.retract_dist
-            r2pos = rpos + hi.retract_dist
-        # Initial homing
-        homing_speed = hi.speed
         homepos = [None, None, None, None]
         homepos[axis] = hi.position_endstop
-        coord = [None, None, None, None]
-        coord[axis] = pos
+        forcepos = list(homepos)
+        if hi.positive_dir:
+            forcepos[axis] -= 1.5 * (hi.position_endstop - position_min)
+        else:
+            forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
 
         if axis == 1:
             if self.check_drive_endstop():
@@ -412,9 +414,7 @@ class SelectorKinematics:
             endstops = [self.drive_endstop]
         else:
             endstops = rail.get_endstops()
-        homing_state.home(coord, homepos, endstops, homing_speed)
-        coord[axis] = hi.position_endstop + rail.get_homed_offset()
-        homing_state.set_homed_position(coord)
+        homing_state.home_rails([rail], forcepos, homepos, None)
     def check_move(self, move):
         if move.axes_d[0]:
             t_pos = move.end_pos[0]

@@ -29,6 +29,7 @@ class TMC2130:
         ppins.register_chip("tmc2130_" + self.name, self)
         # Add DUMP_TMC command
         gcode = self.printer.lookup_object("gcode")
+        step_dist = config.getsection(self.name).getfloat('step_distance')
         gcode.register_mux_command(
             "DUMP_TMC", "STEPPER", self.name,
             self.cmd_DUMP_TMC, desc=self.cmd_DUMP_TMC_help)
@@ -42,9 +43,11 @@ class TMC2130:
         steps = {'256': 0, '128': 1, '64': 2, '32': 3, '16': 4,
                  '8': 5, '4': 6, '2': 7, '1': 8}
         self.mres = config.getchoice('microsteps', steps)
+        self.step_dist_256 = step_dist / (1 << self.mres)
+
         interpolate = config.getboolean('interpolate', True)
-        sc_velocity = config.getfloat('stealthchop_threshold', 0., minval=0.)
-        sc_threshold = self.velocity_to_clock(config, sc_velocity)
+        sc_velocity = config.getfloat('stealthchop_threshold', None, minval=0.)
+        sc_threshold = self.velocity_to_clock(sc_velocity)
         self.iholddelay = config.getint(
             'driver_IHOLDDELAY', 8, minval=0, maxval=15)
         tpowerdown = config.getint('driver_TPOWERDOWN', 0, minval=0, maxval=255)
@@ -58,21 +61,69 @@ class TMC2130:
         pwm_freq = config.getint('driver_PWM_FREQ', 1, minval=0, maxval=3)
         pwm_grad = config.getint('driver_PWM_GRAD', 4, minval=0, maxval=255)
         pwm_ampl = config.getint('driver_PWM_AMPL', 128, minval=0, maxval=255)
-        # calculate current
+
+        # new CHOPCONF options
+        ch_modes = {'SpreadCycle': 0, 'ConstantOff': 1}
+        chopper_mode = config.getchoice(
+            'chopper_mode', ch_modes, "SpreadCycle")
+        rndtf = config.getboolean('driver_RNDTF', False)
+        tfd = config.getint('driver_TFD', 0, minval=0, maxval=15)
+        offset = config.getint('driver_OFFSET', 0, minval=0, maxval=15)
+        disfdcc = config.getboolean('driver_DISFDCC', False)
+        vhighfs = config.getboolean('driver_VHIGHFS', False)
+        vhighchm = config.getboolean('driver_VHIGHCHM', False)
+        sync = config.getint('driver_SYNC', 0, minval=0, maxval=15)
+        dedge = config.getboolean('driver_DEDGE', False)
+        diss2g = config.getboolean('driver_DISS2G', False)
+
+        # new COOLCONF options
+        semin = config.getint('driver_SEMIN', 0, minval=0, maxval=15)
+        seup_choices = {'1': 0, '2': 1, '4': 2, '8': 3}
+        seup = config.getchoice('driver_SEUP', seup_choices, '1')
+        semax = config.getint('driver_SEMAX', 0, minval=0, maxval=15)
+        sedn_choices = {'32': 0, '8': 1, '2': 2, '1': 3}
+        sedn = config.getchoice('driver_SEDN', sedn_choices, '32')
+        seimin = config.getint('driver_SEIMIN', 0, minval=0, maxval=1)
+        sfilt = config.getboolean('driver_SFILT', False)
+
+        # other new driver options
+        tc_velocity = config.getint(
+            'coolstep_threshold', 0, minval=0)
+        self.tcoolthrs = self.velocity_to_clock(tc_velocity)
+        thigh_velocity = config.getint(
+            'thigh_threshold', 0, minval=0)
+        th_threshold = self.velocity_to_clock(thigh_velocity)
         self.vsense = config.getboolean('driver_VSENSE', None)
-        stealth_enable = config.getboolean('stealthchop_enable', False)
+
         # Configure registers
-        self.reg_GCONF = stealth_enable << 2
-        self.reg_CHOP_CONF = (toff | (hstrt << 4) | (hend << 7) |
-                              (blank_time_select << 15) | (self.mres << 24) |
-                              (interpolate << 28))
+        self.reg_GCONF = (sc_velocity is not None) << 2
+        if chopper_mode == 0:
+            # spreadcycle
+            cm_bits = (hstrt << 4) | (hend << 7)
+        else:
+            # constant off with fast decay
+            cm_bits = (((tfd & 0x07) << 4) | (offset << 7) |
+                       ((tfd & 0x08) << 11) | (disfdcc << 12))
+        self.reg_CHOP_CONF = (toff | cm_bits | (rndtf << 13) |
+                              (chopper_mode << 14) |
+                              (blank_time_select << 15) | (vhighfs << 18) |
+                              (vhighchm << 19) | (sync << 20) |
+                              (self.mres << 24) | (interpolate << 28) |
+                              (dedge << 29) | (diss2g << 30))
+        self.reg_COOL_CONF = (semin | (seup << 5) | (semax << 8) |
+                              (sedn << 13) | (seimin << 15) | (sgt << 16) |
+                              (sfilt << 24))
+        self.reg_PWM_CONF = (pwm_ampl | (pwm_grad << 8) | (pwm_freq << 16) |
+                             (pwm_scale << 18))
         self.set_register("GCONF", self.reg_GCONF)
         self.set_current_regs(self.run_current, self.hold_current)
         self.set_register("TPOWERDOWN", tpowerdown)
         self.set_register("TPWMTHRS", max(0, min(0xfffff, sc_threshold)))
-        self.set_register("COOLCONF", sgt << 16)
-        self.set_register("PWMCONF", (
-            pwm_ampl | (pwm_grad << 8) | (pwm_freq << 16) | (pwm_scale << 18)))
+        # TODO: need to use velocity to clock for toolthrs and high?
+        self.set_register("TCOOLTHRS", max(0, min(0xfffff, self.tcoolthrs)))
+        self.set_register("THIGH", max(0, min(0xfffff, th_threshold)))
+        self.set_register("COOLCONF", self.reg_COOL_CONF)
+        self.set_register("PWMCONF", self.reg_PWM_CONF)
         extras = tmc2130_extra.TMC2130_EXTRA(config, self)
         self.printer_state = extras.printer_state
     def set_current_regs(self, run_current, hold_current):
@@ -103,14 +154,10 @@ class TMC2130:
         cs = int(32. * current * sense_resistor * math.sqrt(2.) / vsense
                  - 1. + .5)
         return max(0, min(31, cs))
-    def velocity_to_clock(self, config, velocity):
+    def velocity_to_clock(self, velocity):
         if not velocity:
             return 0
-        stepper_name = config.get_name().split()[1]
-        stepper_config = config.getsection(stepper_name)
-        step_dist = stepper_config.getfloat('step_distance')
-        step_dist_256 = step_dist / (1 << self.mres)
-        return int(TMC_FREQUENCY * step_dist_256 / velocity + .5)
+        return int(TMC_FREQUENCY * self.step_dist_256 / velocity + .5)
     def setup_pin(self, pin_type, pin_params):
         if pin_type != 'endstop' or pin_params['pin'] != 'virtual_endstop':
             raise pins.error("tmc2130 virtual endstop only useful as endstop")
@@ -175,7 +222,8 @@ class TMC2130VirtualEndstop:
         self.tmc2130.set_register("GCONF", self.tmc2130.reg_GCONF)
         self.tmc2130.set_current_regs(
             self.tmc2130.run_current, self.tmc2130.hold_current)
-        self.tmc2130.set_register("TCOOLTHRS", 0)
+        self.tmc2130.set_register(
+            "TCOOLTHRS", max(0, min(0xfffff, self.tmc2130.tcoolthrs)))
         self.mcu_endstop.home_finalize()
 
 def load_config_prefix(config):

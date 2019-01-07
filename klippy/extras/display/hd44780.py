@@ -13,6 +13,7 @@ HD44780_DELAY = .000037
 class HD44780:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
         # pin config
         ppins = self.printer.lookup_object('pins')
         pins = [ppins.lookup_pin(config.get(name + '_pin'))
@@ -27,6 +28,8 @@ class HD44780:
         self.oid = self.mcu.create_oid()
         self.mcu.register_config_callback(self.build_config)
         self.send_data_cmd = self.send_cmds_cmd = None
+        self.refresh_timer = self.reactor.register_timer(self.refresh_event)
+        self.refresh_row = 0
         # framebuffers
         self.text_framebuffer = bytearray(' '*80)
         self.glyph_framebuffer = bytearray(64)
@@ -47,6 +50,15 @@ class HD44780:
             "hd44780_send_cmds oid=%c cmds=%*s", cq=cmd_queue)
         self.send_data_cmd = self.mcu.lookup_command(
             "hd44780_send_data oid=%c data=%*s", cq=cmd_queue)
+    def refresh_event(self, eventtime):
+        # invalidate old data of one row every 5 seconds.  This will
+        # force a new data refesh, compensating for stray characters
+        # as the HD44780 is prone to noise.
+        i = self.refresh_row * 20
+        self.all_framebuffers[0][1][i:i+20] = bytearray('~'*20)
+        # set next row
+        self.refresh_row = (self.refresh_row + 1) % 4
+        return eventtime + 5.
     def send(self, cmds, is_data=False):
         cmd_type = self.send_cmds_cmd
         if is_data:
@@ -77,21 +89,22 @@ class HD44780:
                 self.send(new_data[pos:pos+count], is_data=True)
             old_data[:] = new_data
     def init(self):
-        # Program 4bit / 2-line mode and then issue 0x02 "Home" command
-        init = [[0x33], [0x33], [0x33], [0x22], [0x28],
-                [0x08], [0x01], [0x06], [0x02], [0x0c]]
-        delays = [.1, .01, .001] + [.005 for i in range(7)]
         curtime = self.printer.get_reactor().monotonic()
         print_time = self.mcu.estimated_print_time(curtime)
+        # Program 4bit / 2-line mode and then issue 0x02 "Home" command
+        init = [[0x33], [0x33], [0x33, 0x22, 0x28, 0x02]]
+        # Reset (set positive direction ; enable display and hide cursor)
+        init.append([0x06, 0x0c])
         for i, cmds in enumerate(init):
-            print_time += delays[i]
-            minclock = self.mcu.print_time_to_clock(print_time)
+            minclock = self.mcu.print_time_to_clock(print_time + i * .100)
             self.send_cmds_cmd.send([self.oid, cmds], minclock=minclock)
         # Add custom fonts
         self.glyph_framebuffer[:len(HD44780_chars)] = HD44780_chars
         for i in range(len(self.glyph_framebuffer)):
             self.all_framebuffers[1][1][i] = self.glyph_framebuffer[i] ^ 1
         self.flush()
+        self.reactor.update_timer(
+            self.refresh_timer, self.reactor.monotonic() + 5.)
     def write_text(self, x, y, data):
         if x + len(data) > 20:
             data = data[:20 - min(x, 20)]

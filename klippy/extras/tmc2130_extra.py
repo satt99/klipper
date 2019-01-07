@@ -22,7 +22,9 @@ Registers = {
 }
 
 class TMC2130_EXTRA:
-    GCODES = ["SET_WAVE", "SET_STEP", "SET_CURRENT", "SET_STEALTH"]
+    GCODES = [
+        "SET_WAVE", "SET_STEP", "SET_CURRENT", "SET_STEALTH",
+        "SET_PWMCONF"]
     def __init__(self, config, tmc2130):
         self.printer = config.get_printer()
         self._stepper = None
@@ -32,6 +34,8 @@ class TMC2130_EXTRA:
         self.get_phase = tmc2130.get_phase
         self.set_register = tmc2130.set_register
         self.get_register = tmc2130.get_register
+        dir_pin = config.getsection(self.name).get('dir_pin')
+        self.inverted = dir_pin.startswith("!")
         gcode = self.printer.lookup_object("gcode")
         for gc in self.GCODES:
             tmc_gc = "TMC_" + gc
@@ -42,9 +46,10 @@ class TMC2130_EXTRA:
                 raise config.error("TMC Gcode [%s] Not supported" % (tmc_gc))
             gcode.register_mux_command(
                 tmc_gc, "STEPPER", self.name, command_func, desc=help_attr)
-        wave_factor = config.getfloat('linearity_correction', 0.,
+        wave_factor = config.getfloat('linearity_correction', None,
                                       minval=0., maxval=1.2)
-        self._set_wave(wave_factor)
+        if wave_factor is not None:
+            self._set_wave(wave_factor)
     def printer_state(self, state):
         # TODO: It might be better to look up the correct stepper
         # in the TMC_SET_STEP gcode rather than store it initially
@@ -81,15 +86,14 @@ class TMC2130_EXTRA:
         for reg in regs:
             self.set_register(reg[0], reg[1])
         logging.info(msg)
-    def _set_wave(self, fac):
+    def _set_wave(self, fac, use_default_wave=False):
         if fac < TMC_WAVE_FACTOR_MIN:
             fac = 0.0
         elif fac > TMC_WAVE_FACTOR_MAX:
             fac = TMC_WAVE_FACTOR_MAX
-        # if fac == 0.:
-            # default wave
-        #    self._set_default_wave()
-        #    return "Wave Set To Default"
+        if use_default_wave and fac == 0.:
+            self._set_default_wave()
+            return "Wave set to default"
         error = None
         vA = 0
         prevA = 0
@@ -107,11 +111,13 @@ class TMC2130_EXTRA:
             if (i & 31) == 0:
                 reg = 0
             if fac == 0.:
-                vA = int((TMC_WAVE_AMP + 1) * math.sin((2*math.pi*i + math.pi)/1024) + .5) - 1
+                vA = int((TMC_WAVE_AMP + 1) * math.sin(
+                    (2*math.pi*i + math.pi)/1024) + .5) - 1
             else:
                 # Prusa corrected wave
                 vA = int(
-                    TMC_WAVE_AMP * math.pow(math.sin(2*math.pi*i/1024), fac) + .5)
+                    TMC_WAVE_AMP * math.pow(math.sin(
+                        2*math.pi*i/1024), fac) + .5)
             deltaA = vA - prevA
             prevA = vA
             bitVal = -1
@@ -197,7 +203,7 @@ class TMC2130_EXTRA:
     def cmd_TMC_SET_STEALTH(self, params):
         gcode = self.printer.lookup_object('gcode')
         enable = gcode.get_str('ENABLE', params, None)
-        thrs = gcode.get_str('THRESHOLD', params, None)
+        thrs = gcode.get_int('THRESHOLD', params, None)
         if enable is not None:
             enable = enable.upper()
             if enable not in ["TRUE", "FALSE"]:
@@ -208,11 +214,41 @@ class TMC2130_EXTRA:
                 self.tmc2130.reg_GCONF |= (1 << 2)
             self.set_register("GCONF", self.tmc2130.reg_GCONF)
         if thrs is not None:
-            self.set_register("TPWMTHRS", max(0, min(0xfffff, thrs)))
+            sc_thrs = self.tmc2130.velocity_to_clock(thrs)
+            self.set_register("TPWMTHRS", max(0, min(0xfffff, sc_thrs)))
+    cmd_TMC_SET_PWMCONF_help = "Set stealthchop pwm configuration"
+    def cmd_TMC_SET_PWMCONF(self, params):
+        gcode = self.printer.lookup_object('gcode')
+        ampl = gcode.get_int('AMPL', params, None, minval=0, maxval=255)
+        grad = gcode.get_int('GRAD', params, None, minval=0, maxval=255)
+        freq = gcode.get_int('FREQ', params, None, minval=0, maxval=3)
+        auto = gcode.get('AUTOSCALE', params, None)
+        if ampl is not None:
+            self.tmc2130.reg_PWM_CONF &= ~(0xFFFF)
+            self.tmc2130.reg_PWM_CONF != ampl
+        if grad is not None:
+            self.tmc2130.reg_PWM_CONF &= ~(0xFFFF << 8)
+            self.tmc2130.reg_PWM_CONF != (grad << 8)
+        if freq is not None:
+            self.tmc2130.reg_PWM_CONF &= ~(0x3 << 16)
+            self.tmc2130.reg_PWM_CONF != (freq << 16)
+        if auto is not None:
+            if auto.upper() not in ["TRUE", "FALSE"]:
+                gcode.respond_info(
+                    "AUTOSCALE must be True or False.")
+                return
+            self.tmc2130.reg_PWM_CONF &= ~(0x1 << 18)
+            if auto.upper() == "TRUE":
+                self.tmc2130.reg_PWM_CONF |= (0x1 << 18)
+        self.tmc2130.set_register(self.tmc2130.reg_PWM_CONF)
     cmd_TMC_SET_WAVE_help = "Set wave correction factor for TMC2130 driver"
     def cmd_TMC_SET_WAVE(self, params):
         gcode = self.printer.lookup_object('gcode')
-        msg = self._set_wave(gcode.get_float('FACTOR', params))
+        is_default = gcode.get_str('SET_DEFAULT', params, "False").upper()
+        if is_default == "TRUE":
+            msg = self._set_wave(0., True)
+        else:
+            msg = self._set_wave(gcode.get_float('FACTOR', params))
         gcode.respond_info(msg)
     cmd_TMC_SET_STEP_help = "Force a stepper to a specified step"
     def cmd_TMC_SET_STEP(self, params):
@@ -236,12 +272,10 @@ class TMC2130_EXTRA:
         phase = self.get_phase()
         steps = target_step - phase
         logging.info(
-            "TMC_SET_STEP Initial values: target step: %d, phase: %d, steps to move: %d"
+            "TMC_SET_STEP Initial values: target step: "
+            "%d, phase: %d, steps to move: %d"
             % (target_step, phase, steps))
-        # TODO: Accessing a private member is a no-no, but I have no choice.  I need
-        # to know the step direction. Maybe I can find another place to get this,
-        # perhaps from the config
-        direction = 1 if self._stepper.mcu_stepper._invert_dir else -1
+        direction = 1 if self.inverted else -1
         if steps < 0:
             direction *= -1
             steps *= -1
