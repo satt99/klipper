@@ -53,6 +53,8 @@ class BedMesh:
     FADE_DISABLE = 0x7FFFFFFF
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.printer.register_event_handler("klippy:connect",
+                                            self.handle_connect)
         self.last_position = [0., 0., 0., 0.]
         self.calibrate = BedMeshCalibrate(config, self)
         self.z_mesh = None
@@ -80,10 +82,9 @@ class BedMesh:
             bed_skew.set_downstream_transform(self)
         else:
             self.gcode.set_move_transform(self)
-    def printer_state(self, state):
-        if state == 'connect':
-            self.toolhead = self.printer.lookup_object('toolhead')
-            self.calibrate.load_default_profile()
+    def handle_connect(self):
+        self.toolhead = self.printer.lookup_object('toolhead')
+        self.calibrate.load_default_profile()
     def set_mesh(self, mesh):
         if mesh is not None:
             self.log_fade_complete = True

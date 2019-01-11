@@ -29,12 +29,13 @@ class BedSkew:
         y_config = config.getsection('stepper_y')
         self.y_min = y_config.getfloat('position_min', 0.)
         self.y_max = y_config.getfloat('position_max')
+        self.printer.register_event_handler("klippy:connect",
+                                            self.handle_connect)
         gcode = self.printer.lookup_object('gcode')
         gcode.set_move_transform(self)
         self.downstream_transform = None
-    def printer_state(self, state):
-        if state == 'connect':
-            self.toolhead = self.printer.lookup_object('toolhead')
+    def handle_connect(self):
+        self.toolhead = self.printer.lookup_object('toolhead')
     def _check_pos_range(self, pos, min_offset=0):
         return ((self.x_min + min_offset) <= pos[0] <= self.x_max) and \
                ((self.y_min + min_offset)) <= pos[1] < self.y_max

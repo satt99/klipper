@@ -36,17 +36,25 @@
 #define USARTx_UDRE_vect AVR_SERIAL_REG(USART, CONFIG_SERIAL_PORT, _UDRE_vect)
 #endif
 
-#define PRUSA_FIX
+static inline void
+serial_disable(void)
+{
+    UCSR0B = 0;
+    #if CONFIG_MACH_atmega1284p || CONFIG_MACH_atmega1280 || CONFIG_MACH_atmega2560
+    UCSR1B = 0;
+    #endif
+    #if CONFIG_MACH_atmega1280 || CONFIG_MACH_atmega2560
+    UCSR2B = 0;
+    UCSR3B = 0;
+    #endif
+}
 
 void
 serial_init(void)
 {
-#ifdef PRUSA_FIX
-    // Disable UARTS
-    UCSR0B = 0;
-    UCSR1B = 0;
-    UCSR2B = 0;
-#endif
+    // disable existing serial ports
+    serial_disable();
+
     UCSRxA = CONFIG_SERIAL_BAUD_U2X ? (1<<U2Xx) : 0;
     uint32_t cm = CONFIG_SERIAL_BAUD_U2X ? 8 : 16;
     UBRRx = DIV_ROUND_CLOSEST(CONFIG_CLOCK_FREQ, cm * CONFIG_SERIAL_BAUD) - 1UL;

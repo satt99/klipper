@@ -5,6 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import homing
+import thermistor
+import threading
 
 TMC_REG_COOLCONF = 0x6d
 
@@ -26,6 +28,7 @@ class PrusaGcodes:
             'LOAD_FILAMENT': False,
             'UNLOAD_FILAMENT': False,
             'M900': False,
+            'GET_AMBIENT_TEMP': False,
             'TIMED_GCODE': True,
             'TRAM_Z': False}
         self.printer = config.get_printer()
@@ -36,6 +39,17 @@ class PrusaGcodes:
             'tram_current', None)
         self.supported_gcodes['M900'] = config.getboolean(
             'enable_M900', False)
+        self.ambient_sensor = None
+        self.temp_lock = None
+        self.ambient_temp = 0.
+        if config.has_section('thermistor prusa_ambient'):
+            atemp_cfg = config.getsection('thermistor prusa_ambient')
+            sensor = thermistor.CustomThermistor(atemp_cfg)
+            self.ambient_sensor = sensor.create(config)
+            self.ambient_sensor.setup_minmax(0., 85.)
+            self.ambient_sensor.setup_callback(self.temperature_callback)
+            self.supported_gcodes['GET_AMBIENT_TEMP'] = True
+            self.temp_lock = threading.Lock()
         # TODO: the correct way to do this is to get the pressure
         # for each extruder if there are multiples
         self.default_pressure = 0.
@@ -69,13 +83,14 @@ class PrusaGcodes:
                 self.gcode.register_command(key, command_func,
                                             desc=help_attr)
                 logging.info("Extended gcode " + key + " enabled")
-    def printer_state(self, state):
-        if state == 'ready':
-            try:
-                self.display = self.printer.lookup_object('display')
-            except:
-                self.display = None
-                self.gcode.respond_info("Display not added to config")
+        self.printer.register_event_handler("klippy:ready",
+                                            self.handle_ready)
+    def handle_ready(self):
+        try:
+            self.display = self.printer.lookup_object('display')
+        except:
+            self.display = None
+            self.gcode.respond_info("Display not added to config")
     def build_config(self):
         if self.supported_gcodes['TRAM_Z'] and self.tmc_z_endstop:
             kin = self.printer.lookup_object('toolhead').get_kinematics()
@@ -99,6 +114,9 @@ class PrusaGcodes:
                     'endstop', 'tmc2130_stepper_z:virtual_endstop')
                 self.tmc_z_endstop = (es, "tmc2130_z_endstop")
                 self.supported_gcodes['TRAM_Z'] = True
+    def temperature_callback(self, readtime, temp):
+        with self.temp_lock:
+            self.ambient_temp = temp
     cmd_LOAD_FILAMENT_help = "Load filament into Extruder"
     def cmd_LOAD_FILAMENT(self, params):
         # TODO: use buttons to ask if load should continue
@@ -158,7 +176,7 @@ class PrusaGcodes:
         if self.display:
             self.display.set_message("REMOVE FILAMENT NOW!", 5.)
         self.gcode.run_script_from_command("SET_BEEPER DURATION=1")
-    cmd_LOAD_CONTINUE_help = "Extends filament load to extrude more as necessary"
+    cmd_LOAD_CONTINUE_help = "Extends filament load to extrude more"
     def cmd_LOAD_CONTINUE(self, params):
         length = self.gcode.get_float('LENGTH', params, 50., above=25.)
         toolhead = self.printer.lookup_object('toolhead')
@@ -235,6 +253,10 @@ class PrusaGcodes:
         # to use escape chars (possibly regex)
         script = script.replace('_', " ")
         GCodeTimer(self.reactor, self.gcode, script, delay_time)
-
+    cmd_GET_AMBIENT_TEMP_help = "Read abmient temperature"
+    def cmd_GET_AMBIENT_TEMP(self, params):
+        with self.temp_lock:
+            self.gcode.respond_info(
+                "Current Ambient Temperature: %.2fC" % self.ambient_temp)
 def load_config(config):
     return PrusaGcodes(config)

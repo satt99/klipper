@@ -4,27 +4,45 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "board/gpio.h" //i2c_write/read/setup
 #include "basecmd.h" //oid_alloc
 #include "command.h"  //sendf
 #include "sched.h" //DECL_COMMAND
-#include "board/gpio.h" //i2c_write/read/setup
+#include "i2ccmds.h" // i2cdev_oid_lookup
 
 struct i2cdev_s {
     struct i2c_config i2c_config;
 };
 
 void
+i2cdev_write(struct i2cdev_s *i2c, uint8_t data_len, uint8_t* data)
+{
+    i2c_write(i2c->i2c_config, data_len, data);
+}
+
+void
+i2cdev_read(struct i2cdev_s *i2c, uint8_t reg_len, uint8_t* reg,
+             uint8_t data_len, uint8_t* data)
+{
+    i2c_read(i2c->i2c_config, reg_len, reg, data_len, data);
+}
+
+void
 command_config_i2c(uint32_t *args)
 {
-    uint8_t addr = args[3];
-    if (addr & 1)
-        shutdown("Invalid I2C address");
+    uint8_t addr = args[3] & 0x7f;
     struct i2cdev_s *i2c = oid_alloc(args[0], command_config_i2c
                                      , sizeof(*i2c));
     i2c->i2c_config = i2c_setup(args[1], args[2], addr);
 }
 DECL_COMMAND(command_config_i2c,
-             "config_i2c oid=%c bus=%u rate=%u addr=%u");
+             "config_i2c oid=%c bus=%u rate=%u address=%u");
+
+struct i2cdev_s *
+i2cdev_oid_lookup(uint8_t oid)
+{
+    return oid_lookup(oid, command_config_i2c);
+}
 
 void
 command_i2c_write(uint32_t *args)

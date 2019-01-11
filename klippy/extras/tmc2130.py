@@ -124,8 +124,7 @@ class TMC2130:
         self.set_register("THIGH", max(0, min(0xfffff, th_threshold)))
         self.set_register("COOLCONF", self.reg_COOL_CONF)
         self.set_register("PWMCONF", self.reg_PWM_CONF)
-        extras = tmc2130_extra.TMC2130_EXTRA(config, self)
-        self.printer_state = extras.printer_state
+        self.extras = tmc2130_extra.TMC2130_EXTRA(config, self)
     def set_current_regs(self, run_current, hold_current):
         def get_bits(rc, hc, vs):
             run = self.current_bits(rc, self.sense_resistor, vs)

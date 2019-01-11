@@ -54,6 +54,8 @@ class ProbeTemp:
             self.sensor = thermistor.Thermistor(config, params)
             self.sensor.setup_minmax(0., 100.)
             self.sensor.setup_callback(self.temperature_callback)
+        self.printer.register_event_handler("klippy:ready",
+                                            self.handle_ready)
         self.gcode.register_command(
             'GET_PROBE_TEMP', self.cmd_GET_PROBE_TEMP,
             desc=self.cmd_GET_PROBE_TEMP_help)
@@ -63,19 +65,18 @@ class ProbeTemp:
         self.gcode.register_command(
             'APPLY_TEMP_OFFSET', self.cmd_APPLY_TEMP_OFFSET,
             desc=self.cmd_APPLY_TEMP_OFFSET_help)
-    def printer_state(self, state):
-        if state == 'ready':
-            self.cal_helper.printer_state(state)
-            self.toolhead = self.printer.lookup_object('toolhead')
-            if self.sensor is None:
-                # A sensor was added to config but not found in the default
-                # sensor dictionary. Check to see if it is a custom thermistor.
-                custom_thermistor = self.printer.lookup_object(
-                    self.sensor_type)
-                self.sensor = custom_thermistor.create(self.config)
-                if self.sensor:
-                    self.sensor.setup_minmax(0., 100.)
-                    self.sensor.setup_callback(self.temperature_callback)
+    def handle_ready(self):
+        self.cal_helper.handle_ready()
+        self.toolhead = self.printer.lookup_object('toolhead')
+        if self.sensor is None:
+            # A sensor was added to config but not found in the default
+            # sensor dictionary. Check to see if it is a custom thermistor.
+            custom_thermistor = self.printer.lookup_object(
+                self.sensor_type)
+            self.sensor = custom_thermistor.create(self.config)
+            if self.sensor:
+                self.sensor.setup_minmax(0., 100.)
+                self.sensor.setup_callback(self.temperature_callback)
     def temperature_callback(self, readtime, temp):
         with self.lock:
             self.sensor_temp = temp
@@ -186,7 +187,7 @@ class ProbeCalibrationHelper:
         self.gcode.register_command(
             'CALIBRATE_PROBE_TEMP', self.cmd_CALIBRATE_PROBE_TEMP, 
             desc=self.cmd_CALIBRATE_PROBE_TEMP_help)
-    def printer_state(self, state):
+    def handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.kinematics = self.toolhead.get_kinematics()
         try:

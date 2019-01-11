@@ -50,23 +50,24 @@ class TMC2130_EXTRA:
                                       minval=0., maxval=1.2)
         if wave_factor is not None:
             self._set_wave(wave_factor)
-    def printer_state(self, state):
+        self.printer.register_event_handler(
+            "klippy:ready", self.handle_ready)
+    def handle_ready(self):
         # TODO: It might be better to look up the correct stepper
         # in the TMC_SET_STEP gcode rather than store it initially
-        if state == "ready":
-            toolhead = self.printer.lookup_object('toolhead')
-            if self.name == 'extruder':
-                self._stepper = toolhead.get_extruder().stepper
-                logging.info("TMC2130 %s: Stepper Found" % (self.name))
-            else:
-                steppers = toolhead.get_kinematics().get_steppers()
-                for s in steppers:
-                    if s.get_name() == self.name:
-                        self._stepper = s
-                        logging.info("TMC2130 %s: Stepper Found" % (self.name))
-                        break
-                if self._stepper is None:
-                    logging.info("TMC2130 %s: Stepper NOT Found" % (self.name))
+        toolhead = self.printer.lookup_object('toolhead')
+        if self.name == 'extruder':
+            self._stepper = toolhead.get_extruder().stepper
+            logging.info("TMC2130 %s: Stepper Found" % (self.name))
+        else:
+            steppers = toolhead.get_kinematics().get_steppers()
+            for s in steppers:
+                if s.get_name() == self.name:
+                    self._stepper = s
+                    logging.info("TMC2130 %s: Stepper Found" % (self.name))
+                    break
+            if self._stepper is None:
+                logging.info("TMC2130 %s: Stepper NOT Found" % (self.name))
     def _set_default_wave(self):
         # default wave regs from page 79 of TMC2130 datasheet
         msg = "TMC2130: Wave factor on stepper [%s] set to default" \

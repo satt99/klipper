@@ -43,6 +43,9 @@ class SixOhTwo:
         self.synced_velocity = config.getfloat('synced_velocity', 20.)
         self._init_tool()
         self.engaged = False
+        self.printer.register_event_handler("klippy:ready",
+                                            self.handle_ready)
+
         # TODO: add help to the commands
         self.gcode.register_command('MOVE_SELECTOR', self.cmd_MOVE_SELECTOR)
         self.gcode.register_command('HOME_SELECTOR', self.cmd_HOME_SELECTOR)
@@ -50,9 +53,8 @@ class SixOhTwo:
             'SELECTOR_MOTOR_OFF', self.cmd_SELECTOR_MOTOR_OFF)
         self.gcode.register_command('PAUSE_TEST', self.cmd_PAUSE_TEST)
         self.gcode.register_command('A602', self.cmd_A602)
-    def printer_state(self, state):
-        if state == 'ready':
-            logging.info("S3l3ctor set to tool [%d]", self.current_tool)
+    def handle_ready(self):
+        logging.info("S3l3ctor set to tool [%d]", self.current_tool)
     def _init_tool(self):
         # fetch current tool from a pickled value
         try:
