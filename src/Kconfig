@@ -117,6 +117,9 @@ config HAVE_GPIO_I2C
 config HAVE_GPIO_HARD_PWM
     bool
     default n
+config HAVE_GPIO_IRQ
+    bool
+    default n
 config HAVE_GPIO_BITBANGING
     bool
     default n

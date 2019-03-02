@@ -54,4 +54,13 @@ void i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write);
 void i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
               , uint8_t read_len, uint8_t *read);
 
+struct gpio_irq{
+    uint8_t irq_id, isc0, isc1, oid;
+    void (*func)(uint8_t);
+};
+
+struct gpio_irq* gpio_irq_setup(uint8_t pin, uint8_t oid, void (*cb)(uint8_t));
+void gpio_irq_update(struct gpio_irq *pirq, uint8_t mode);
+void gpio_irq_reset(struct gpio_irq* pirq);
+
 #endif // gpio.h

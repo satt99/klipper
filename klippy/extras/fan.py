@@ -3,6 +3,7 @@
 # Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import fan_sensor
 
 FAN_MIN_TIME = 0.100
 
@@ -26,6 +27,7 @@ class PrinterFan:
             'shutdown_speed', default_shutdown_speed, minval=0., maxval=1.)
         self.mcu_fan.setup_start_value(
             0., max(0., min(self.max_power, shutdown_speed)))
+        self.fan_sensor = fan_sensor.get_fan_sensor(config)
     def handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.)
     def set_speed(self, print_time, value):
@@ -41,6 +43,7 @@ class PrinterFan:
         self.mcu_fan.set_pwm(print_time, value)
         self.last_fan_time = print_time
         self.last_fan_value = value
+        self.fan_sensor.update(value)
     def get_status(self, eventtime):
         return {'speed': self.last_fan_value}
 
