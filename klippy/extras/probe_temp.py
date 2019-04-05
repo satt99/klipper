@@ -117,6 +117,7 @@ class ProbeTemp:
         total_time = 0
         temp, target = self.get_temp(0)
         while compare(temp, target):
+            # I need to break this loop on shutdown
             total_time += 1
             if timeout:
                 remaining = timeout - total_time
@@ -179,8 +180,12 @@ class ProbeCalibrationHelper:
         self.printer = self.sensor.printer
         self.gcode = self.sensor.gcode
         self.display = None
-        probe_config = config.getsection('probe')
-        self.z_offset = probe_config.getfloat('z_offset')
+        if config.has_section('probe'):
+            self.z_offset = config.getsection('probe').getfloat('z_offset')
+        elif config.has_section('bltouch'):
+            self.z_offset = config.getsection('bltouch').getfloat('z_offset')
+        else:
+            self.z_offset = 0.
         self.gcode.register_command(
             'CALIBRATE_PROBE_TEMP', self.cmd_CALIBRATE_PROBE_TEMP,
             desc=self.cmd_CALIBRATE_PROBE_TEMP_help)
