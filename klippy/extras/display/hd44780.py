@@ -77,7 +77,10 @@ class HD44780:
             for i in range(len(diffs)-2, -1, -1):
                 pos, count = diffs[i]
                 nextpos, nextcount = diffs[i+1]
-                if pos + 4 >= nextpos and nextcount < 16:
+                # Do not batch changes belonging to different display lines
+                if (pos // 20) != (nextpos // 20):
+                    continue
+                if pos + 4 >= nextpos:
                     diffs[i][1] = nextcount + (nextpos - pos)
                     del diffs[i+1]
             # Transmit changes
