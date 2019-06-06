@@ -2,6 +2,8 @@
 #define __LPC176X_INTERNAL_H
 // Local definitions for lpc176x code
 
+#include "LPC17xx.h"
+
 #define GPIO(PORT, NUM) ((PORT) * 32 + (NUM))
 #define GPIO2PORT(PIN) ((PIN) / 32)
 #define GPIO2BIT(PIN) (1<<((PIN) % 32))
@@ -15,5 +17,7 @@
 int is_enabled_pclock(uint32_t pclk);
 void enable_pclock(uint32_t pclk);
 void gpio_peripheral(uint32_t gpio, int func, int pullup);
+
+void udelay(uint32_t usecs);
 
 #endif // internal.h

@@ -36,7 +36,7 @@ command_config_i2c(uint32_t *args)
     i2c->i2c_config = i2c_setup(args[1], args[2], addr);
 }
 DECL_COMMAND(command_config_i2c,
-             "config_i2c oid=%c bus=%u rate=%u address=%u");
+             "config_i2c oid=%c i2c_bus=%u rate=%u address=%u");
 
 struct i2cdev_s *
 i2cdev_oid_lookup(uint8_t oid)

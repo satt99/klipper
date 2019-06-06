@@ -3,6 +3,7 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 
 DEFAULT_IDLE_GCODE = """
 TURN_OFF_HEATERS
@@ -19,9 +20,17 @@ class IdleTimeout:
         self.gcode = self.printer.lookup_object('gcode')
         self.toolhead = self.timeout_timer = None
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
-        self.state = "Idle"
         self.idle_timeout = config.getfloat('timeout', 600., above=0.)
         self.idle_gcode = config.get('gcode', DEFAULT_IDLE_GCODE).split('\n')
+        self.gcode.register_command(
+            'SET_IDLE_TIMEOUT', self.cmd_SET_IDLE_TIMEOUT)
+        self.state = "Idle"
+        self.last_print_start_systime = 0.
+    def get_status(self, eventtime):
+        printing_time = 0.
+        if state == "Printing":
+            printing_time = eventtime - self.last_print_start_systime
+        return { "state": self.state, "printing_time": printing_time }
     def handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.timeout_timer = self.reactor.register_timer(self.timeout_handler)
@@ -83,10 +92,21 @@ class IdleTimeout:
             return
         # Transition to "printing" state
         self.state = "Printing"
+        self.last_print_start_systime = curtime
         check_time = READY_TIMEOUT + print_time - est_print_time
         self.reactor.update_timer(self.timeout_timer, curtime + check_time)
         self.printer.send_event("idle_timeout:printing",
                                 est_print_time + PIN_MIN_TIME)
+    def cmd_SET_IDLE_TIMEOUT(self, params):
+        timeout = self.gcode.get_float(
+            'TIMEOUT', params, self.idle_timeout, above=0.)
+        self.idle_timeout = timeout
+        self.gcode.respond_info(
+            "idle_timeout: Timeout set to %.2f s" % timeout)
+        if self.state == "Ready":
+            checktime = self.reactor.monotonic() + timeout
+            self.reactor.update_timer(
+                self.timeout_timer, checktime)
 
 def load_config(config):
     return IdleTimeout(config)

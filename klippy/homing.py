@@ -1,9 +1,9 @@
 # Code for state tracking during homing operations
 #
-# Copyright (C) 2016,2017  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math
+import logging, math, collections
 
 HOMING_STEP_DELAY = 0.00000025
 HOMING_START_DELAY = 0.001
@@ -78,7 +78,11 @@ class Homing:
         else:
             self.toolhead.set_position(movepos)
         for mcu_endstop, name in endstops:
-            mcu_endstop.home_finalize()
+            try:
+                mcu_endstop.home_finalize()
+            except EndstopError as e:
+                if error is None:
+                    error = str(e)
         if error is not None:
             raise EndstopError(error)
         # Check if some movement occurred
@@ -148,3 +152,5 @@ class EndstopError(Exception):
 def EndstopMoveError(pos, msg="Move out of range"):
     return EndstopError("%s: %.3f %.3f %.3f [%.3f]" % (
             msg, pos[0], pos[1], pos[2], pos[3]))
+
+Coord = collections.namedtuple('Coord', ('x', 'y', 'z', 'e'))

@@ -1,3 +1,4 @@
+
 # TMC2130 additional configuration options
 #
 # Copyright (C) 2018  Eric Callahan <arksine.code@gmail.com>
@@ -10,32 +11,40 @@ TMC_WAVE_FACTOR_MIN = 1.005
 TMC_WAVE_FACTOR_MAX = 1.2
 TMC_WAVE_AMP = 247
 
-Registers = {
-    "GCONF": 0x00, "GSTAT": 0x01, "IOIN": 0x04, "IHOLD_IRUN": 0x10,
-    "TPOWERDOWN": 0x11, "TSTEP": 0x12, "TPWMTHRS": 0x13, "TCOOLTHRS": 0x14,
-    "THIGH": 0x15, "XDIRECT": 0x2d, "MSLUT0": 0x60, "MSLUT1": 0x61,
-    "MSLUT2": 0x62, "MSLUT3": 0x63, "MSLUT4": 0x64, "MSLUT5": 0x65,
-    "MSLUT6": 0x66, "MSLUT7": 0x67, "MSLUTSEL": 0x68, "MSLUTSTART": 0x69,
-    "MSCNT": 0x6a, "MSCURACT": 0x6b, "CHOPCONF": 0x6c, "COOLCONF": 0x6d,
-    "DCCTRL": 0x6e, "DRV_STATUS": 0x6f, "PWMCONF": 0x70,
-    "PWM_SCALE": 0x71, "ENCM_CTRL": 0x72, "LOST_STEPS": 0x73,
-}
+WaveRegisters = [
+    "MSLUTSTART", "MSLUTSEL", "MSLUT0", "MSLUT1", "MSLUT2",
+    "MSLUT3", "MSLUT4", "MSLUT5", "MSLUT6", "MSLUT7"]
 
 class TMC2130_EXTRA:
     GCODES = [
-        "SET_WAVE", "SET_STEP", "SET_CURRENT", "SET_STEALTH",
-        "SET_PWMCONF"]
-    def __init__(self, config, tmc2130):
+        "SET_WAVE", "SET_STEP", "SET_STEALTH", "SET_PWMCONF"]
+    def __init__(self, config, tmc2130, freq):
+        self.tmc_frequency = freq
         self.printer = config.get_printer()
         self._stepper = None
         self.tmc2130 = tmc2130
         self.name = tmc2130.name
+        self.regs = tmc2130.regs
+        self.fields = tmc2130.fields
         self.get_microsteps = tmc2130.get_microsteps
         self.get_phase = tmc2130.get_phase
         self.set_register = tmc2130.set_register
         self.get_register = tmc2130.get_register
+
+        stepper_config = config.getsection(self.name)
+        step_dist = stepper_config.getfloat('step_distance')
+        self.step_dist_256 = step_dist / (1 << self.fields.get_field("MRES"))
+
         dir_pin = config.getsection(self.name).get('dir_pin')
         self.inverted = dir_pin.startswith("!")
+
+        tc_vel = config.getfloat('coolstep_threshold', 0., minval=0.)
+        tc_thrs = self.velocity_to_thrs(tc_vel)
+        self.fields.set_field("TCOOLTHRS", tc_thrs)
+        thigh_vel = config.getfloat('thigh_threshold', 0., minval=0.)
+        th_thrs = self.velocity_to_thrs(thigh_vel)
+        self.fields.set_field('THIGH', th_thrs)
+
         gcode = self.printer.lookup_object("gcode")
         for gc in self.GCODES:
             tmc_gc = "TMC_" + gc
@@ -49,7 +58,7 @@ class TMC2130_EXTRA:
         wave_factor = config.getfloat('linearity_correction', None,
                                       minval=0., maxval=1.2)
         if wave_factor is not None:
-            self._set_wave(wave_factor)
+            self._set_wave(wave_factor, is_init=True)
         self.printer.register_event_handler(
             "klippy:ready", self.handle_ready)
     def handle_ready(self):
@@ -68,32 +77,31 @@ class TMC2130_EXTRA:
                     break
             if self._stepper is None:
                 logging.info("TMC2130 %s: Stepper NOT Found" % (self.name))
-    def _set_default_wave(self):
+    def velocity_to_thrs(self, velocity):
+        if not velocity:
+            return 0
+        thrs = int(self.tmc_frequency * self.step_dist_256 / velocity + .5)
+        return max(0, min(0xfffff, thrs))
+    def _set_default_wave(self, is_init=False):
         # default wave regs from page 79 of TMC2130 datasheet
         msg = "TMC2130: Wave factor on stepper [%s] set to default" \
             % (self.name)
-        regs = [
-            ("MSLUTSTART", 0x00F70000),
-            ("MSLUTSEL", 0xFFFF8056),
-            ("MSLUT0", 0xAAAAB554),  # MSLUT0
-            ("MSLUT1", 0x4A9554AA),  # MSLUT1
-            ("MSLUT2", 0x24492929),  # MSLUT2
-            ("MSLUT3", 0x10104222),  # MSLUT3
-            ("MSLUT4", 0xFBFFFFFF),  # MSLUT4
-            ("MSLUT5", 0xB5BB777D),  # MSLUT5
-            ("MSLUT6", 0x49295556),  # MSLUT6
-            ("MSLUT7", 0x00404222)   # MSLUT7
+        default_vals = [
+            0x00F70000, 0xFFFF8056, 0xAAAAB554, 0x4A9554AA, 0x24492929,
+            0x10104222, 0xFBFFFFFF, 0xB5BB777D, 0x49295556, 0x00404222
         ]
-        for reg in regs:
-            self.set_register(reg[0], reg[1])
+        for reg, val in zip(WaveRegisters, default_vals):
+            self.fields.set_field(reg, val)
+            if not is_init:
+                self.set_register(reg, val)
         logging.info(msg)
-    def _set_wave(self, fac, use_default_wave=False):
+    def _set_wave(self, fac, use_default_wave=False, is_init=False):
         if fac < TMC_WAVE_FACTOR_MIN:
             fac = 0.0
         elif fac > TMC_WAVE_FACTOR_MAX:
             fac = TMC_WAVE_FACTOR_MAX
         if use_default_wave and fac == 0.:
-            self._set_default_wave()
+            self._set_default_wave(is_init=is_init)
             return "Wave set to default"
         error = None
         vA = 0
@@ -107,7 +115,7 @@ class TMC2130_EXTRA:
         deltaA = 0
         reg = 0
         # configure MSLUTSTART
-        self.set_register("MSLUTSTART", (TMC_WAVE_AMP << 16))
+        self.fields.set_field("MSLUTSTART", (TMC_WAVE_AMP << 16))
         for i in range(256):
             if (i & 31) == 0:
                 reg = 0
@@ -179,44 +187,42 @@ class TMC2130_EXTRA:
                 reg |= 0x80000000
             if (i & 31) == 31:
                 # configure MSLUT
-                self.set_register("MSLUT" + str(((i >> 5) & 7)), reg)
+                name = "MSLUT" + str(((i >> 5) & 7))
+                self.fields.set_field(name, reg)
             else:
                 reg >>= 1
         # configure MSLUTSEL
-        self.set_register(
+        self.fields.set_field(
             "MSLUTSEL", w[0] | (w[1] << 2) | (w[2] << 4) | (w[3] << 6) |
             (x[0] << 8) | (x[1] << 16) | (x[2] << 24))
         if error:
             logging.error(error)
             return error
         else:
+            if not is_init:
+                for r in WaveRegisters:
+                    self.set_register(r, self.regs[r])
             success_msg = "TMC2130: Wave factor on stepper [%s] set to: %f" % \
                           (self.name, fac)
             logging.info(success_msg)
             return success_msg
-    cmd_TMC_SET_CURRENT_help = "Set the current applied to a stepper"
-    def cmd_TMC_SET_CURRENT(self, params):
-        gcode = self.printer.lookup_object('gcode')
-        rc = gcode.get_float('RUN', params, above=0., below=2.)
-        hc = gcode.get_float('HOLD', params, rc, above=0., below=2.)
-        self.tmc2130.set_current_regs(rc, hc)
     cmd_TMC_SET_STEALTH_help = "Toggle stealtchop mode"
     def cmd_TMC_SET_STEALTH(self, params):
         gcode = self.printer.lookup_object('gcode')
         enable = gcode.get_str('ENABLE', params, None)
-        thrs = gcode.get_int('THRESHOLD', params, None)
+        vel = gcode.get_int('THRESHOLD', params, None)
         if enable is not None:
             enable = enable.upper()
             if enable not in ["TRUE", "FALSE"]:
                 gcode.respond_info("Unknown value for ENABLE, aborting")
                 return
-            self.tmc2130.reg_GCONF &= ~(1 << 2)
-            if enable == "TRUE":
-                self.tmc2130.reg_GCONF |= (1 << 2)
-            self.set_register("GCONF", self.tmc2130.reg_GCONF)
-        if thrs is not None:
-            sc_thrs = self.tmc2130.velocity_to_clock(thrs)
-            self.set_register("TPWMTHRS", max(0, min(0xfffff, sc_thrs)))
+            en = (enable == "TRUE")
+            self.fields.set_field("en_pwm_mode", en)
+            self.set_register("GCONF", self.regs["GCONF"])
+        if vel is not None:
+            sc_thrs = self.velocity_to_thrs(vel)
+            self.fields.set_field("TPWMTHRS", sc_thrs)
+            self.set_register("TPWMTHRS", self.regs["TPWMTHRS"])
     cmd_TMC_SET_PWMCONF_help = "Set stealthchop pwm configuration"
     def cmd_TMC_SET_PWMCONF(self, params):
         gcode = self.printer.lookup_object('gcode')
@@ -225,23 +231,19 @@ class TMC2130_EXTRA:
         freq = gcode.get_int('FREQ', params, None, minval=0, maxval=3)
         auto = gcode.get('AUTOSCALE', params, None)
         if ampl is not None:
-            self.tmc2130.reg_PWM_CONF &= ~(0xFFFF)
-            self.tmc2130.reg_PWM_CONF != ampl
+            self.fields.set_field("PWM_AMPL", ampl)
         if grad is not None:
-            self.tmc2130.reg_PWM_CONF &= ~(0xFFFF << 8)
-            self.tmc2130.reg_PWM_CONF != (grad << 8)
+            self.fields.set_field("PWM_GRAD", grad)
         if freq is not None:
-            self.tmc2130.reg_PWM_CONF &= ~(0x3 << 16)
-            self.tmc2130.reg_PWM_CONF != (freq << 16)
+            self.fields.set_field("pwm_freq", freq)
         if auto is not None:
             if auto.upper() not in ["TRUE", "FALSE"]:
                 gcode.respond_info(
                     "AUTOSCALE must be True or False.")
                 return
-            self.tmc2130.reg_PWM_CONF &= ~(0x1 << 18)
-            if auto.upper() == "TRUE":
-                self.tmc2130.reg_PWM_CONF |= (0x1 << 18)
-        self.tmc2130.set_register(self.tmc2130.reg_PWM_CONF)
+            pwm_scale = (auto.upper() == "TRUE")
+            self.fields.set_field("pwm_autoscale", pwm_scale)
+        self.tmc2130.set_register("PWMCONF", self.regs["PWMCONF"])
     cmd_TMC_SET_WAVE_help = "Set wave correction factor for TMC2130 driver"
     def cmd_TMC_SET_WAVE(self, params):
         gcode = self.printer.lookup_object('gcode')
