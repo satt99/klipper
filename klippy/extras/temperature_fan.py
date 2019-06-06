@@ -31,6 +31,8 @@ class TemperatureFan:
             'target_temp', 40. if self.max_temp > 40. else self.max_temp,
             minval=self.min_temp, maxval=self.max_temp)
         self.target_temp = self.target_temp_conf
+        self.start_temp = config.getfloat(
+            'start_temp', 0., maxval=self.target_temp)
         algos = {'watermark': ControlBangBang, 'pid': ControlPID}
         algo = config.getchoice('control', algos)
         self.control = algo(self, config)
@@ -46,7 +48,7 @@ class TemperatureFan:
             value = 0.
         elif value < self.min_speed:
             value = self.min_speed
-        if self.target_temp <= 0.:
+        if self.target_temp <= 0. or self.last_temp < self.start_temp:
             value = 0.
         if ((read_time < self.next_speed_time or not self.last_speed_value)
                 and abs(value - self.last_speed_value) < 0.05):
@@ -68,6 +70,8 @@ class TemperatureFan:
     cmd_SET_TEMPERATURE_FAN_TARGET_TEMP_help = "Sets a temperature fan target"
     def cmd_SET_TEMPERATURE_FAN_TARGET_TEMP(self, params):
         temp = self.gcode.get_float('TARGET', params, self.target_temp_conf)
+        self.start_temp = min(self.gcode.get_float(
+            'START_TEMP', params, self.start_temp), temp)
         self.set_temp(temp)
     def set_temp(self, degrees):
         if degrees and (degrees < self.min_temp or degrees > self.max_temp):
