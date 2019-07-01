@@ -79,6 +79,11 @@ class TemperatureFan:
                 "Requested temperature (%.1f) out of range (%.1f:%.1f)"
                 % (degrees, self.min_temp, self.max_temp))
         self.target_temp = degrees
+    def get_status(self, eventtime):
+        return {
+            'temperature': self.last_temp,
+            'target': self.target_temp
+        }
 
 ######################################################################
 # Bang-bang control algo
