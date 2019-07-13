@@ -21,6 +21,7 @@ class GCodeParser:
         self.reactor = printer.get_reactor()
         self.is_processing_data = False
         self.is_fileinput = not not printer.get_start_args().get("debuginput")
+        self.mmu2s = None
         self.fd_handle = None
         if not self.is_fileinput:
             self.fd_handle = self.reactor.register_fd(self.fd,
@@ -114,6 +115,9 @@ class GCodeParser:
     def _action_respond_error(self, msg):
         self.respond_error(msg)
         return ""
+    def _action_report_temperature(self):
+        self.respond(self._get_temp(self.reactor.monotonic()))
+        return ""
     def _get_gcode_position(self):
         p = [lp - bp for lp, bp in zip(self.last_position, self.base_position)]
         p[3] /= self.extrude_factor
@@ -150,6 +154,7 @@ class GCodeParser:
             'action_respond_info': self._action_respond_info,
             'action_respond_error': self._action_respond_error,
             'action_emergency_stop': self._action_emergency_stop,
+            'action_report_temperature': self._action_report_temperature,
         }
     def _handle_shutdown(self):
         if not self.is_printer_ready:
@@ -176,6 +181,7 @@ class GCodeParser:
             self.extruder = extruders[0]
             self.toolhead.set_extruder(self.extruder)
         self.fan = self.printer.lookup_object('fan', None)
+        self.mmu2s = self.printer.lookup_object('mmu2s', None)
         if self.is_fileinput and self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(self.fd,
                                                       self._process_data)
@@ -449,6 +455,9 @@ class GCodeParser:
         self.respond_info('Unknown command:"%s"' % (cmd,))
     def cmd_Tn(self, params):
         # Select Tool
+        if self.mmu2s is not None:
+            index = self.get_int('T', params, minval=0, maxval=4)
+            self.mmu2s.change_tool(index)
         extruders = kinematics.extruder.get_printer_extruders(self.printer)
         index = self.get_int('T', params, minval=0, maxval=len(extruders)-1)
         e = extruders[index]
