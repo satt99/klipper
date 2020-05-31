@@ -9,11 +9,16 @@ class VirtualSD:
     def __init__(self, config):
         printer = config.get_printer()
         printer.register_event_handler("klippy:shutdown", self.handle_shutdown)
+        # File List/Info
+        self.filemanager = printer.load_object(config, 'file_manager')
+        if self.filemanager is None:
+            raise config.error("virtual_sdcard: unable to load FileManager")
         # sdcard state
-        sd = config.get('path')
-        self.sdcard_dirname = os.path.normpath(os.path.expanduser(sd))
+        self.sdcard_dirname = self.filemanager.get_sd_directory()
         self.current_file = None
         self.file_position = self.file_size = 0
+        # Print Stat Tracking
+        self.print_stats = PrintStats(config)
         # Work timer
         self.reactor = printer.get_reactor()
         self.must_pause_work = self.cmd_from_sd = False
@@ -25,6 +30,17 @@ class VirtualSD:
             self.gcode.register_command(cmd, getattr(self, 'cmd_' + cmd))
         for cmd in ['M28', 'M29', 'M30']:
             self.gcode.register_command(cmd, self.cmd_error)
+        self.gcode.register_command(
+            "RESET_SD", self.cmd_RESET_SD,
+            desc=self.cmd_RESET_SD_help)
+        self.gcode.register_command(
+            "GET_SD_STATUS", self.cmd_GET_SD_STATUS,
+            desc=self.cmd_GET_SD_STATUS_help)
+        # Register Webhooks
+        webhooks = printer.lookup_object('webhooks')
+        webhooks.register_endpoint(
+            "/printer/print/start", self._handle_remote_start_request,
+            methods=["POST"])
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -39,26 +55,30 @@ class VirtualSD:
             logging.info("Virtual sdcard (%d): %s\nUpcoming (%d): %s",
                          readpos, repr(data[:readcount]),
                          self.file_position, repr(data[readcount:]))
+    def _handle_remote_start_request(self, web_request):
+        filename = web_request.get('filename')
+        if filename[0] != '/':
+            filename = '/' + filename
+        script = "M23 " + filename + "\nM24"
+        web_request.put('script', script)
+        self.gcode.run_script_from_remote(web_request)
     def stats(self, eventtime):
         if self.work_timer is None:
             return False, ""
         return True, "sd_pos=%d" % (self.file_position,)
     def get_file_list(self):
-        dname = self.sdcard_dirname
-        try:
-            filenames = os.listdir(self.sdcard_dirname)
-            return [(fname, os.path.getsize(os.path.join(dname, fname)))
-                    for fname in sorted(filenames, key=str.lower)
-                    if not fname.startswith('.')
-                    and os.path.isfile((os.path.join(dname, fname)))]
-        except:
-            logging.exception("virtual_sdcard get_file_list")
-            raise self.gcode.error("Unable to get file list")
+        filenames = self.filemanager.get_file_list()
+        return [(fname, filenames[fname]['size'])
+                for fname in sorted(filenames, key=str.lower)]
     def get_status(self, eventtime):
         progress = 0.
-        if self.work_timer is not None and self.file_size:
+        if self.file_size:
             progress = float(self.file_position) / self.file_size
-        return {'progress': progress}
+        is_active = self.is_active()
+        status = self.print_stats.get_status(eventtime)
+        status.update({'progress': progress, 'is_active': is_active,
+                       'file_position': self.file_position})
+        return status
     def is_active(self):
         return self.work_timer is not None
     def do_pause(self):
@@ -69,6 +89,29 @@ class VirtualSD:
     # G-Code commands
     def cmd_error(self, gcmd):
         raise gcmd.error("SD write not supported")
+    cmd_GET_SD_STATUS_help = "Show Virtual SD Print Details"
+    def cmd_GET_SD_STATUS(self, gcmd):
+        curtime = self.reactor.monotonic()
+        sd_status = self.get_status(curtime)
+        gcmd.respond_info(
+            "SD active: %s\nfile name: %s\nprogress: %.2f%%\n"
+            "time elapsed since start: %.2f s\nprint duration: %.2f s\n"
+            "filament used: %.2f mm\nfile position: %d" %
+            (str(sd_status['is_active']), sd_status['current_file'],
+             sd_status['progress'] * 100., sd_status['total_duration'],
+             sd_status['print_duration'], sd_status['filament_used'],
+             self.file_position))
+    cmd_RESET_SD_help = "Clears a loaded SD File. Stops the print if necessary"
+    def cmd_RESET_SD(self, gcmd):
+        if self.cmd_from_sd:
+            raise gcmd.error(
+                "RESET_SD cannot be run from the sdcard")
+        if self.current_file is not None:
+            self.do_pause()
+            self.current_file.close()
+            self.current_file = None
+        self.file_position = self.file_size = 0.
+        self.print_stats.reset()
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
@@ -87,6 +130,7 @@ class VirtualSD:
             self.current_file.close()
             self.current_file = None
             self.file_position = self.file_size = 0
+            self.print_stats.reset()
         try:
             orig = gcmd.get_commandline()
             filename = orig[orig.find("M23") + 4:].split()[0].strip()
@@ -113,6 +157,7 @@ class VirtualSD:
         self.current_file = f
         self.file_position = 0
         self.file_size = fsize
+        self.print_stats.set_current_file(filename)
     def cmd_M24(self, gcmd):
         # Start/resume SD print
         if self.work_timer is not None:
@@ -146,6 +191,7 @@ class VirtualSD:
             logging.exception("virtual_sdcard seek")
             self.work_timer = None
             return self.reactor.NEVER
+        self.print_stats.note_start()
         gcode_mutex = self.gcode.get_mutex()
         partial_input = ""
         lines = []
@@ -188,7 +234,69 @@ class VirtualSD:
         logging.info("Exiting SD card print (position %d)", self.file_position)
         self.work_timer = None
         self.cmd_from_sd = False
+        if self.current_file is not None:
+            self.print_stats.note_pause()
+        else:
+            self.file_position = self.file_size = 0
+            self.print_stats.reset()
         return self.reactor.NEVER
+
+class PrintStats:
+    def __init__(self, config):
+        printer = config.get_printer()
+        self.gcode = printer.lookup_object('gcode')
+        self.reactor = printer.get_reactor()
+        self.reset()
+    def _update_filament_usage(self, eventtime):
+        gc_status = self.gcode.get_status(eventtime)
+        cur_epos = gc_status['last_epos']
+        self.filament_used += (cur_epos - self.last_epos) \
+            / gc_status['extrude_factor']
+        self.last_epos = cur_epos
+    def set_current_file(self, filename):
+        self.reset()
+        self.filename = filename
+    def note_start(self):
+        curtime = self.reactor.monotonic()
+        if self.print_start_time is None:
+            self.print_start_time = curtime
+        elif self.last_pause_time is not None:
+            # Update pause time duration
+            pause_duration = curtime - self.last_pause_time
+            self.prev_pause_duration += pause_duration
+            self.last_pause_time = None
+        # Reset last e-position
+        gc_status = self.gcode.get_status(curtime)
+        self.last_epos = gc_status['last_epos']
+    def note_pause(self):
+        if self.last_pause_time is None:
+            curtime = self.reactor.monotonic()
+            self.last_pause_time = curtime
+            # update filament usage
+            self._update_filament_usage(curtime)
+    def reset(self):
+        self.filename = ""
+        self.prev_pause_duration = self.last_epos = 0.
+        self.filament_used = 0.
+        self.print_start_time = self.last_pause_time = None
+    def get_status(self, eventtime):
+        total_duration = 0.
+        time_paused = self.prev_pause_duration
+        if self.print_start_time is not None:
+            curtime = self.reactor.monotonic()
+            if self.last_pause_time is not None:
+                # Calculate the total time spent paused during the print
+                time_paused += curtime - self.last_pause_time
+            else:
+                # Accumulate filament if not paused
+                self._update_filament_usage(curtime)
+            total_duration = curtime - self.print_start_time
+        return {
+            'current_file': self.filename,
+            'total_duration': total_duration,
+            'print_duration': total_duration - time_paused,
+            'filament_used': self.filament_used
+        }
 
 def load_config(config):
     return VirtualSD(config)

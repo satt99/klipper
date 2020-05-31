@@ -3,7 +3,7 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, re, logging, collections, shlex
+import os, re, logging, collections, shlex, termios
 import homing
 
 class GCodeCommand:
@@ -70,7 +70,7 @@ class GCodeCommand:
 class GCodeParser:
     error = homing.CommandError
     RETRY_TIME = 0.100
-    def __init__(self, printer, fd):
+    def __init__(self, printer, fd, webhooks):
         self.printer = printer
         self.fd = fd
         printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -91,6 +91,17 @@ class GCodeParser:
         self.pending_commands = []
         self.bytes_read = 0
         self.input_log = collections.deque([], 50)
+        # Register webhooks
+        webhooks.register_endpoint(
+            '/printer/gcode/help', self._handle_remote_help)
+        webhooks.register_endpoint(
+            '/printer/gcode', self.run_script_from_remote,
+            methods=['POST'])
+        webhooks.register_endpoint(
+            '/printer/restart', self._handle_remote_restart, methods=['POST'])
+        webhooks.register_endpoint(
+            '/printer/firmware_restart', self._handle_remote_restart,
+            methods=['POST'])
         # Command handling
         self.is_printer_ready = False
         self.mutex = self.reactor.mutex()
@@ -349,6 +360,24 @@ class GCodeParser:
         if self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(self.fd,
                                                       self._process_data)
+    def _handle_remote_help(self, web_request):
+        web_request.send(dict(self.gcode_help))
+    def _handle_remote_restart(self, web_request):
+        path = web_request.get_path()
+        if path == '/printer/restart':
+            web_request.put('script', 'restart')
+        elif path == '/printer/firmware_restart':
+            web_request.put('script', 'firmware_restart')
+        self.run_script_from_remote(web_request)
+    def run_script_from_remote(self, web_request):
+        script = web_request.get('script')
+        if 'M112' in script.upper():
+            self.cmd_M112({})
+            return
+        try:
+            self.run_script(script)
+        except Exception as e:
+            raise web_request.error(e.message, 400)
     def run_script_from_command(self, script):
         self._process_commands(script.split('\n'), need_ack=False)
     def run_script(self, script):
@@ -362,10 +391,15 @@ class GCodeParser:
     def respond_raw(self, msg):
         if self.is_fileinput:
             return
+        self.printer.send_event("gcode:respond", msg)
         try:
             os.write(self.fd, msg+"\n")
-        except os.error:
-            logging.exception("Write g-code response")
+        except os.error as e:
+            if e.errno == 11:
+                termios.tcflush(self.fd, termios.TCOFLUSH)
+                logging.info("gcode: Write gcode response flushed")
+            else:
+                logging.exception("Write g-code response")
     def respond_info(self, msg, log=True):
         if log:
             logging.info(msg)

@@ -5,8 +5,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, optparse, logging, time, threading, collections, importlib
-import util, reactor, queuelogger, msgproto, homing
-import gcode, configfile, pins, mcu, toolhead
+import util, reactor, queuelogger, msgproto, homing, socket
+import gcode, configfile, pins, mcu, toolhead, webhooks
 
 message_ready = "Printer is ready"
 
@@ -57,8 +57,19 @@ class Printer:
         self.in_shutdown_state = False
         self.run_result = None
         self.event_handlers = {}
-        gc = gcode.GCodeParser(self, input_fd)
-        self.objects = collections.OrderedDict({'gcode': gc})
+        web_hooks = webhooks.WebHooks(self)
+        gc = gcode.GCodeParser(self, input_fd, web_hooks)
+        self.objects = collections.OrderedDict(
+            {'gcode': gc, 'webhooks': web_hooks})
+        # Register Printer Endpoints
+        web_hooks.register_endpoint(
+            '/printer/info', self._handle_info_request)
+        # Endpoint for log file, does not require a handler
+        log_file = start_args.get('log_file')
+        if log_file is not None:
+            web_hooks.register_endpoint(
+                "/printer/klippy.log()", None,
+                params={'handler': 'FileRequestHandler', 'path': log_file})
     def get_start_args(self):
         return self.start_args
     def get_reactor(self):
@@ -126,6 +137,11 @@ class Printer:
             logging.getLogger().setLevel(level)
         if self.bglogger is not None:
             pconfig.log_config(config)
+        # Attempt to load the api_server module first.  This allows the server
+        # to be configured in the event that another module generates a config
+        # error
+        if config.has_section('api_server'):
+            self.load_object(config, 'api_server')
         # Create printer components
         for m in [pins, mcu]:
             m.add_printer_objects(config)
@@ -135,6 +151,17 @@ class Printer:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
         pconfig.check_unused_options(config)
+    def _handle_info_request(self, web_request):
+        version = self.start_args['software_version']
+        cpu_info = self.start_args['cpu_info']
+        error = self.state_message != message_startup and \
+            self.state_message != message_ready
+        web_request.send(
+            {'cpu': cpu_info, 'version': version,
+                'hostname': socket.gethostname(),
+                'is_ready': self.state_message == message_ready,
+                'error_detected': error,
+                'message': self.state_message})
     def _connect(self, eventtime):
         try:
             self._read_config()
@@ -273,16 +300,18 @@ def main():
         start_args['debugoutput'] = options.debugoutput
         start_args.update(options.dictionary)
     if options.logfile:
+        start_args['log_file'] = options.logfile
         bglogger = queuelogger.setup_bg_logging(options.logfile, debuglevel)
     else:
         logging.basicConfig(level=debuglevel)
     logging.info("Starting Klippy...")
     start_args['software_version'] = util.get_git_version()
+    start_args['cpu_info'] = util.get_cpu_info()
     if bglogger is not None:
         versions = "\n".join([
             "Args: %s" % (sys.argv,),
             "Git version: %s" % (repr(start_args['software_version']),),
-            "CPU: %s" % (util.get_cpu_info(),),
+            "CPU: %s" % (start_args['cpu_info'],),
             "Python: %s" % (repr(sys.version),)])
         logging.info(versions)
     elif not options.debugoutput:
