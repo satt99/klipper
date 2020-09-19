@@ -1,6 +1,6 @@
 # Wrapper around C helper code
 #
-# Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging
@@ -11,13 +11,16 @@ import cffi
 # c_helper.so compiling
 ######################################################################
 
-COMPILE_CMD = ("gcc -Wall -g -O2 -shared -fPIC"
-               " -flto -fwhole-program -fno-use-linker-plugin"
-               " -o %s %s")
+GCC_CMD = "gcc"
+COMPILE_ARGS = ("-Wall -g -O2 -shared -fPIC"
+                " -flto -fwhole-program -fno-use-linker-plugin"
+                " -o %s %s")
+SSE_FLAGS = "-mfpmath=sse -msse2"
 SOURCE_FILES = [
     'pyhelper.c', 'serialqueue.c', 'stepcompress.c', 'itersolve.c', 'trapq.c',
-    'kin_cartesian.c', 'kin_corexy.c', 'kin_delta.c', 'kin_polar.c',
-    'kin_rotary_delta.c', 'kin_winch.c', 'kin_extruder.c',
+    'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
+    'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c', 'kin_extruder.c',
+    'kin_shaper.c',
 ]
 DEST_LIB = "c_helper.so"
 OTHER_FILES = [
@@ -78,6 +81,10 @@ defs_kin_corexy = """
     struct stepper_kinematics *corexy_stepper_alloc(char type);
 """
 
+defs_kin_corexz = """
+    struct stepper_kinematics *corexz_stepper_alloc(char type);
+"""
+
 defs_kin_delta = """
     struct stepper_kinematics *delta_stepper_alloc(double arm2
         , double tower_x, double tower_y);
@@ -102,6 +109,27 @@ defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
     void extruder_set_smooth_time(struct stepper_kinematics *sk
         , double smooth_time);
+"""
+
+defs_kin_shaper = """
+    enum INPUT_SHAPER_TYPE {
+        INPUT_SHAPER_ZV = 0,
+        INPUT_SHAPER_ZVD = 1,
+        INPUT_SHAPER_MZV = 2,
+        INPUT_SHAPER_EI = 3,
+        INPUT_SHAPER_2HUMP_EI = 4,
+        INPUT_SHAPER_3HUMP_EI = 5,
+    };
+
+    double input_shaper_get_step_generation_window(int shaper_type
+        , double shaper_freq, double damping_ratio);
+    int input_shaper_set_shaper_params(struct stepper_kinematics *sk
+        , int shaper_type_x, int shaper_type_y
+        , double shaper_freq_x, double shaper_freq_y
+        , double damping_ratio_x, double damping_ratio_y);
+    int input_shaper_set_sk(struct stepper_kinematics *sk
+        , struct stepper_kinematics *orig_sk);
+    struct stepper_kinematics * input_shaper_alloc(void);
 """
 
 defs_serialqueue = """
@@ -144,10 +172,10 @@ defs_std = """
 """
 
 defs_all = [
-    defs_pyhelper, defs_serialqueue, defs_std,
-    defs_stepcompress, defs_itersolve, defs_trapq,
-    defs_kin_cartesian, defs_kin_corexy, defs_kin_delta, defs_kin_polar,
-    defs_kin_rotary_delta, defs_kin_winch, defs_kin_extruder
+    defs_pyhelper, defs_serialqueue, defs_std, defs_stepcompress,
+    defs_itersolve, defs_trapq, defs_kin_cartesian, defs_kin_corexy,
+    defs_kin_corexz, defs_kin_delta, defs_kin_polar, defs_kin_rotary_delta,
+    defs_kin_winch, defs_kin_extruder, defs_kin_shaper,
 ]
 
 # Return the list of file modification times
@@ -164,7 +192,7 @@ def get_mtimes(srcdir, filelist):
 
 # Check if the code needs to be compiled
 def check_build_code(srcdir, target, sources, cmd, other_files=[]):
-    src_times = get_mtimes(srcdir, sources + other_files)
+    src_times = get_mtimes(srcdir, sources + other_files + [__file__])
     obj_times = get_mtimes(srcdir, [target])
     if not obj_times or max(src_times) > min(obj_times):
         logging.info("Building C code module %s", target)
@@ -176,6 +204,12 @@ def check_build_code(srcdir, target, sources, cmd, other_files=[]):
             logging.error(msg)
             raise Exception(msg)
 
+def check_gcc_option(option):
+    cmd = "%s %s -S -o /dev/null -xc /dev/null > /dev/null 2>&1" % (
+        GCC_CMD, option)
+    res = os.system(cmd)
+    return res == 0
+
 FFI_main = None
 FFI_lib = None
 pyhelper_logging_callback = None
@@ -185,8 +219,11 @@ def get_ffi():
     global FFI_main, FFI_lib, pyhelper_logging_callback
     if FFI_lib is None:
         srcdir = os.path.dirname(os.path.realpath(__file__))
-        check_build_code(srcdir, DEST_LIB, SOURCE_FILES, COMPILE_CMD
-                         , OTHER_FILES)
+        if check_gcc_option(SSE_FLAGS):
+            cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
+        else:
+            cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
+        check_build_code(srcdir, DEST_LIB, SOURCE_FILES, cmd, OTHER_FILES)
         FFI_main = cffi.FFI()
         for d in defs_all:
             FFI_main.cdef(d)

@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import bus, tmc, tmc2130
+from . import bus, tmc, tmc2130
 
 TMC_FREQUENCY=12000000.
 
@@ -309,8 +309,7 @@ class TMC5160:
         self.fields = tmc.FieldHelper(Fields, SignedFields, FieldFormatters)
         self.mcu_tmc = tmc2130.MCU_TMC_SPI(config, Registers, self.fields)
         # Allow virtual pins to be created
-        diag1_pin = config.get('diag1_pin', None)
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc, diag1_pin)
+        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
         # Register commands
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc)
         cmdhelper.setup_register_dump(ReadRegisters)

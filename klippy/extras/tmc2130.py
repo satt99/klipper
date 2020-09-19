@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import bus, tmc
+from . import bus, tmc
 
 TMC_FREQUENCY=13200000.
 
@@ -522,8 +522,7 @@ class TMC2130:
         self.get_current = cur_helper.get_current
         self.set_current = cur_helper.set_current
         # Allow virtual pins to be created
-        diag1_pin = config.get('diag1_pin', None)
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc, diag1_pin, cur_helper)
+        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
         # Register commands
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc)
         cmdhelper.setup_register_dump(ReadRegisters)
